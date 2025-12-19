@@ -52,25 +52,65 @@
 
             <!-- Stats Grid -->
             <div class="stats-grid">
-                <div class="stat-card">
+                <div class="stat-card" title="Total estimated API cost for this session">
                     <div class="stat-value" id="stat-cost">-</div>
                     <div class="stat-label">Estimated Cost</div>
                 </div>
-                <div class="stat-card">
+                <div class="stat-card" title="Total tokens used (input + output + reasoning)">
                     <div class="stat-value" id="stat-tokens">-</div>
                     <div class="stat-label">Total Tokens</div>
                 </div>
-                <div class="stat-card">
+                <div class="stat-card" title="Number of tool/MCP calls made by agents">
                     <div class="stat-value" id="stat-tools">-</div>
                     <div class="stat-label">Tool Calls</div>
                 </div>
-                <div class="stat-card">
+                <div class="stat-card" title="A round is one complete agent cycle: work → answer/vote → restart. Includes answer rounds, voting rounds, and presentation rounds.">
                     <div class="stat-value" id="stat-rounds">-</div>
                     <div class="stat-label">Rounds</div>
                 </div>
-                <div class="stat-card">
+                <div class="stat-card" title="Number of AI agents participating in this session">
                     <div class="stat-value" id="stat-agents">-</div>
                     <div class="stat-label">Agents</div>
+                </div>
+            </div>
+
+            <!-- Config Section (Try This) -->
+            <section class="section config-section-top">
+                <h2 class="section-title">🚀 Try This Session</h2>
+                <div id="config-container"></div>
+            </section>
+
+            <!-- Glossary (collapsible) -->
+            <div class="glossary-toggle" onclick="document.getElementById('glossary').classList.toggle('open')">
+                <span>📖 Glossary</span>
+                <span class="glossary-icon">▶</span>
+            </div>
+            <div id="glossary" class="glossary">
+                <div class="glossary-grid">
+                    <div class="glossary-item">
+                        <dt>Round (per-agent)</dt>
+                        <dd>One complete cycle for a single agent: work → answer/vote/presentation → restart. Each agent tracks its own round count independently. The "Rounds" stat shows the sum across all agents.</dd>
+                    </div>
+                    <div class="glossary-item">
+                        <dt>Answer</dt>
+                        <dd>An agent's proposed solution to the task. Multiple agents can provide competing answers.</dd>
+                    </div>
+                    <div class="glossary-item">
+                        <dt>Vote</dt>
+                        <dd>Agents evaluate all available answers and vote for the best one, providing reasoning for their choice.</dd>
+                    </div>
+                    <div class="glossary-item">
+                        <dt>Restart</dt>
+                        <dd>When an agent completes a round, it restarts with fresh context including other agents' answers, votes, and feedback.</dd>
+                    </div>
+                    <div class="glossary-item">
+                        <dt>Presentation</dt>
+                        <dd>The final round where the winning agent presents the polished final answer.</dd>
+                    </div>
+                    <div class="glossary-item">
+                        <dt>Workspace</dt>
+                        <dd>Each agent's isolated file system directory where they can create and modify files during the task.</dd>
+                    </div>
                 </div>
             </div>
 
@@ -86,15 +126,15 @@
                 <div class="tools-list" id="tools-container"></div>
             </section>
 
-            <!-- Timeline Section -->
+            <!-- Coordination Flow Section -->
             <section class="section">
-                <h2 class="section-title">Coordination Timeline</h2>
+                <h2 class="section-title">Coordination Flow</h2>
                 <div class="timeline" id="timeline-container"></div>
             </section>
 
-            <!-- Answers Section -->
+            <!-- Agent Activity Section -->
             <section class="section">
-                <h2 class="section-title">Answers & Votes</h2>
+                <h2 class="section-title">Agent Activity</h2>
                 <div id="answers-container"></div>
             </section>
 
@@ -107,16 +147,16 @@
                 <div class="final-answer-content" id="final-answer"></div>
             </section>
 
+            <!-- Workspace Section (legacy - now integrated in Agent Activity) -->
+            <section class="section" id="workspace-section" style="display: none;">
+                <h2 class="section-title">Agent Workspaces</h2>
+                <div id="workspace-container"></div>
+            </section>
+
             <!-- Agent Outputs Section -->
             <section class="section">
                 <h2 class="section-title">Agent Output Logs</h2>
                 <div id="outputs-container"></div>
-            </section>
-
-            <!-- Config Section -->
-            <section class="section">
-                <h2 class="section-title">Configuration</h2>
-                <div id="config-container"></div>
             </section>
 
             <!-- Footer -->
