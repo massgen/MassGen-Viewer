@@ -162,9 +162,6 @@ async function fetchGist(gistId) {
 async function parseGistFiles(gist) {
     const files = {};
 
-    console.log('=== parseGistFiles Debug ===');
-    console.log('Gist files count:', Object.keys(gist.files).length);
-
     // Collect promises for files that need to be fetched from raw_url
     const fetchPromises = [];
 
@@ -173,15 +170,11 @@ async function parseGistFiles(gist) {
 
         // Check if content is truncated (GitHub API sets truncated=true for large files)
         if (fileData.truncated || !fileData.content) {
-            console.log('File truncated, fetching from raw_url:', filename);
             fetchPromises.push(
                 fetch(fileData.raw_url)
                     .then(r => r.text())
                     .then(content => ({ filename, path, content }))
-                    .catch(e => {
-                        console.log('Failed to fetch raw content:', filename, e);
-                        return { filename, path, content: '' };
-                    })
+                    .catch(() => ({ filename, path, content: '' }))
             );
         } else {
             // Process inline content
@@ -198,9 +191,6 @@ async function parseGistFiles(gist) {
         }
     }
 
-    console.log('All parsed file paths:', Object.keys(files));
-    console.log('=== End parseGistFiles Debug ===');
-
     return files;
 }
 
@@ -212,22 +202,16 @@ function processFileContent(files, filename, path, content) {
     if (filename.endsWith('.json')) {
         try {
             files[path] = JSON.parse(content);
-            console.log('Parsed JSON:', path);
         } catch {
             files[path] = content;
-            console.log('Failed to parse JSON:', path);
         }
     } else if (filename.endsWith('.yaml') || filename.endsWith('.yml')) {
         // Try to parse YAML files
-        console.log('Parsing YAML:', path);
-        console.log('Raw YAML content (first 500 chars):', content.substring(0, 500));
         try {
             const parsed = parseYaml(content);
-            console.log('Parsed YAML result:', parsed);
             files[path] = parsed;
             files[path]._raw = content; // Keep raw for display
-        } catch (e) {
-            console.log('Failed to parse YAML:', path, e);
+        } catch {
             files[path] = content;
         }
     } else {
@@ -260,9 +244,6 @@ function extractAgentFromPath(path) {
  * Extract session data from parsed files
  */
 function extractSessionData(files) {
-    console.log('=== extractSessionData Debug ===');
-    console.log('Input files count:', Object.keys(files).length);
-
     // Look for metrics/status files with various path patterns
     let metrics = {};
     let status = {};
@@ -271,29 +252,18 @@ function extractSessionData(files) {
 
     for (const [path, content] of Object.entries(files)) {
         if (path.endsWith('metrics_summary.json') && typeof content === 'object') {
-            console.log('Found metrics_summary.json at:', path);
             metrics = content;
         }
         if (path.endsWith('status.json') && typeof content === 'object') {
-            console.log('Found status.json at:', path);
             status = content;
         }
         if (path.endsWith('coordination_events.json') && typeof content === 'object') {
-            console.log('Found coordination_events.json at:', path);
             coordination = content;
         }
         if (path.endsWith('snapshot_mappings.json') && typeof content === 'object') {
-            console.log('Found snapshot_mappings.json at:', path);
             snapshotMappings = content;
         }
-        if (path.endsWith('execution_metadata.yaml')) {
-            console.log('Found execution_metadata.yaml at:', path, 'type:', typeof content);
-        }
     }
-
-    console.log('metrics:', metrics);
-    console.log('status:', status);
-    console.log('coordination keys:', Object.keys(coordination));
 
     // Build session summary
     const meta = metrics.meta || {};
@@ -513,32 +483,19 @@ function renderAgents(data) {
     const statusAgents = data.status.agents || {};
     const winner = data.session.winner;
 
-    // Debug logging
-    console.log('=== Agent Debug ===');
-    console.log('metrics.agents:', agents);
-    console.log('status.agents:', statusAgents);
-    console.log('executionMetadata:', data.executionMetadata);
-    console.log('executionMetadata.config:', data.executionMetadata?.config);
-    console.log('executionMetadata.config.agents:', data.executionMetadata?.config?.agents);
-
     // Also try to get agent list from execution metadata config
     let configAgents = [];
     if (data.executionMetadata?.config?.agents) {
         const cfgAgents = data.executionMetadata.config.agents;
-        console.log('cfgAgents type:', typeof cfgAgents, Array.isArray(cfgAgents));
-        console.log('cfgAgents value:', cfgAgents);
         configAgents = Array.isArray(cfgAgents) ? cfgAgents : Object.values(cfgAgents);
-        console.log('configAgents after conversion:', configAgents);
     }
 
     // Fallback: try to extract agents from raw YAML if parsing didn't work
     if (configAgents.length === 0 && data.executionMetadata?._raw) {
-        console.log('Falling back to raw YAML extraction');
         const rawYaml = data.executionMetadata._raw;
         // Look for patterns like "- id: agent_a" followed by "model: xxx"
         const agentMatches = rawYaml.matchAll(/- id: (\S+)[\s\S]*?model: (\S+)/g);
         for (const match of agentMatches) {
-            console.log('Found agent in raw YAML:', match[1], match[2]);
             configAgents.push({
                 id: match[1],
                 backend: { model: match[2] }
@@ -553,7 +510,6 @@ function renderAgents(data) {
             if (e.agent_id) coordAgentIds.add(e.agent_id);
         });
     }
-    console.log('coordAgentIds:', [...coordAgentIds]);
 
     // Collect all agent IDs from various sources
     const allAgentIds = new Set([
@@ -562,9 +518,6 @@ function renderAgents(data) {
         ...configAgents.map(a => a?.id).filter(Boolean),
         ...coordAgentIds
     ]);
-
-    console.log('allAgentIds:', [...allAgentIds]);
-    console.log('=== End Agent Debug ===');
 
     if (allAgentIds.size === 0) {
         container.innerHTML = '<div class="no-data">No agent data available</div>';
@@ -1486,35 +1439,23 @@ function renderConfig(data) {
     const gitCommit = config.git?.commit?.substring(0, 8) || '';
 
     // Get agent configs - handle both array and object formats
-    console.log('=== renderConfig Debug ===');
-    console.log('config:', config);
-    console.log('config.config:', config.config);
-    console.log('config.config?.agents:', config.config?.agents);
-
     let agents = config.config?.agents || [];
-    console.log('agents before Array check:', agents, 'isArray:', Array.isArray(agents));
     if (!Array.isArray(agents)) {
         // Convert object to array if needed
         agents = Object.values(agents);
-        console.log('agents after Object.values:', agents);
     }
-    console.log('final agents array:', agents);
 
     // Fallback: extract agents from raw YAML if parsing didn't work
     if (agents.length === 0 && config._raw) {
-        console.log('Falling back to raw YAML for config agents');
         const rawYaml = config._raw;
         const agentMatches = [...rawYaml.matchAll(/- id: (\S+)[\s\S]*?model: (\S+)/g)];
         for (const match of agentMatches) {
-            console.log('Found agent in raw YAML:', match[1], match[2]);
             agents.push({
                 id: match[1],
                 backend: { model: match[2] }
             });
         }
     }
-    console.log('agents after fallback:', agents);
-    console.log('=== End renderConfig Debug ===');
 
     const agentSummary = agents.length > 0
         ? agents.map(a => {
@@ -1872,6 +1813,8 @@ window.downloadWorkspaceZip = async function(agentId) {
     if (typeof JSZip === 'undefined') {
         const script = document.createElement('script');
         script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+        script.integrity = 'sha512-XMVd28F1oH/O71fzwBnV7HucLxVwtxf26XV8P4wPk26EDxuGZ91N8bsOttmnomcCD3CS5ZMRL50H0GgOHvegtg==';
+        script.crossOrigin = 'anonymous';
         script.onload = () => createAndDownloadZip(agentId, files);
         document.head.appendChild(script);
     } else {
