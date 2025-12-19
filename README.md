@@ -11,7 +11,7 @@ This viewer fetches MassGen session data from GitHub Gist and displays it in a c
 Sessions are viewed via URL parameter:
 
 ```
-https://massgen.github.io/massgen-viewer/?gist=YOUR_GIST_ID
+https://massgen.github.io/MassGen-Viewer/?gist=YOUR_GIST_ID
 ```
 
 ## Features
