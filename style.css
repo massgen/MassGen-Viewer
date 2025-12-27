@@ -1497,6 +1497,103 @@ body {
     text-align: center;
 }
 
+/* Session Status Banner */
+.status-banner {
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    margin-bottom: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.status-banner.status-error {
+    background: rgba(247, 118, 142, 0.15);
+    border: 1px solid var(--accent-red);
+    color: var(--accent-red);
+}
+
+.status-banner.status-interrupted {
+    background: rgba(224, 175, 104, 0.15);
+    border: 1px solid var(--accent-yellow);
+    color: var(--accent-yellow);
+}
+
+.status-banner.status-timeout {
+    background: rgba(224, 175, 104, 0.15);
+    border: 1px solid var(--accent-yellow);
+    color: var(--accent-yellow);
+}
+
+.status-icon {
+    font-size: 1.2rem;
+}
+
+.status-message {
+    flex: 1;
+}
+
+/* Turn Navigation */
+.turn-navigation {
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    padding: 0.75rem 1rem;
+    margin-top: 1rem;
+}
+
+.turn-nav-header {
+    margin-bottom: 0.5rem;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.turn-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.turn-tab {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    padding: 0.4rem 0.8rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    transition: all 0.2s;
+}
+
+.turn-tab:hover {
+    background: var(--border-color);
+}
+
+.turn-tab.active {
+    background: var(--accent-cyan);
+    color: var(--bg-primary);
+    border-color: var(--accent-cyan);
+}
+
+.turn-tab.complete .turn-status-icon {
+    color: var(--accent-green);
+}
+
+.turn-tab.error .turn-status-icon {
+    color: var(--accent-red);
+}
+
+.turn-tab.pending .turn-status-icon {
+    color: var(--accent-yellow);
+}
+
+.turn-tab.active .turn-status-icon {
+    color: inherit;
+}
+
+.turn-status-icon {
+    margin-right: 0.25rem;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
     body { padding: 1rem; }
@@ -1504,4 +1601,5 @@ body {
     .tool-name { min-width: 120px; max-width: 200px; }
     .tool-stats { min-width: 80px; }
     .agent-stats { grid-template-columns: 1fr; }
+    .turn-tabs { flex-direction: column; }
 }

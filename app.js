@@ -1,10 +1,119 @@
 /**
  * MassGen Session Viewer
  * Fetches and displays MassGen session data from GitHub Gist
+ *
+ * Enhanced for multi-turn session support:
+ * - Parses _session_manifest.json for turn navigation
+ * - Displays session status (complete/error/interrupted)
+ * - Supports turn-by-turn navigation
  */
 
 // Global state
 let sessionData = {};
+let currentTurn = null; // For multi-turn navigation
+let sessionManifest = null; // Parsed from _session_manifest.json
+
+// =============================================================================
+// Session Manifest Functions (Multi-Turn Support)
+// =============================================================================
+
+/**
+ * Parse the session manifest from _session_manifest.json
+ * Returns null if manifest doesn't exist (legacy single-turn gist)
+ */
+function parseSessionManifest(files) {
+    const manifestPath = '_session_manifest.json';
+    if (files[manifestPath] && typeof files[manifestPath] === 'object') {
+        return files[manifestPath];
+    }
+    return null;
+}
+
+/**
+ * Detect if this is a legacy gist (no manifest)
+ * Legacy gists have files directly in the root without turn prefixes
+ */
+function detectLegacyGist(files) {
+    // If we have a manifest, it's not legacy
+    if (files['_session_manifest.json']) {
+        return false;
+    }
+    // Legacy gists have files like "metrics_summary.json" directly
+    // New gists have files like "turn_1/attempt_1/metrics_summary.json"
+    for (const path of Object.keys(files)) {
+        if (path.startsWith('turn_')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * Get session status from manifest or infer from files
+ */
+function getSessionStatus(manifest, files) {
+    if (manifest && manifest.status) {
+        return manifest.status;
+    }
+    // Infer from files - check for errors in status.json
+    for (const [path, content] of Object.entries(files)) {
+        if (path.endsWith('status.json') && typeof content === 'object') {
+            const rounds = content.rounds?.by_outcome || {};
+            if (rounds.error > 0) return 'error';
+            if (rounds.timeout > 0) return 'timeout';
+        }
+    }
+    return 'complete';
+}
+
+/**
+ * Get error info from manifest or status.json
+ */
+function getErrorInfo(manifest, files) {
+    if (manifest && manifest.error) {
+        return manifest.error;
+    }
+    // Try to extract from status.json
+    for (const [path, content] of Object.entries(files)) {
+        if (path.endsWith('status.json') && typeof content === 'object') {
+            const agents = content.agents || {};
+            for (const [agentId, agentData] of Object.entries(agents)) {
+                if (agentData.error) {
+                    return {
+                        type: agentData.error.type || 'unknown',
+                        message: agentData.error.message || 'Unknown error',
+                        agent_id: agentId
+                    };
+                }
+            }
+        }
+    }
+    return null;
+}
+
+/**
+ * Get turns from manifest
+ */
+function getTurnsFromManifest(manifest) {
+    if (manifest && manifest.turns && Array.isArray(manifest.turns)) {
+        return manifest.turns;
+    }
+    return [];
+}
+
+/**
+ * Set current turn for filtering data
+ */
+function setCurrentTurn(turnNumber) {
+    currentTurn = turnNumber;
+    // Re-render turn-dependent sections
+    if (sessionData) {
+        renderAgents(sessionData);
+        renderAnswers(sessionData);
+        renderTimeline(sessionData);
+        renderWorkspace(sessionData);
+    }
+}
 
 /**
  * Simple YAML parser for basic YAML structures
@@ -395,6 +504,20 @@ function extractSessionData(files) {
         for (const m of idMatches) agentSources.add(m[1]);
     }
 
+    // Parse manifest if available
+    const manifest = parseSessionManifest(files);
+    const isLegacy = detectLegacyGist(files);
+    const sessionStatus = getSessionStatus(manifest, files);
+    const errorInfo = getErrorInfo(manifest, files);
+    const turns = getTurnsFromManifest(manifest);
+
+    // Store manifest globally
+    sessionManifest = manifest;
+
+    // Override question and winner from manifest if available
+    const finalQuestion = manifest?.question || question;
+    const finalWinner = manifest?.winner || winner;
+
     return {
         metrics,
         status,
@@ -402,18 +525,24 @@ function extractSessionData(files) {
         snapshotMappings,
         executionMetadata,
         workspaceFiles,
+        manifest,
+        isLegacy,
+        sessionStatus,
+        errorInfo,
+        turns,
         session: {
-            question,
-            winner,
+            question: finalQuestion,
+            winner: finalWinner,
             startTime,
             durationSeconds,
-            cost: totals.estimated_cost || 0,
-            inputTokens: totals.input_tokens || 0,
-            outputTokens: totals.output_tokens || 0,
+            cost: manifest?.total_cost || totals.estimated_cost || 0,
+            inputTokens: manifest?.total_tokens?.input || totals.input_tokens || 0,
+            outputTokens: manifest?.total_tokens?.output || totals.output_tokens || 0,
             reasoningTokens: totals.reasoning_tokens || 0,
             totalToolCalls: metrics.tools?.total_calls || 0,
             totalRounds: metrics.rounds?.total_rounds || 0,
-            numAgents: meta.num_agents || agentSources.size || Object.keys(metrics.agents || {}).length
+            numAgents: manifest?.agents?.length || meta.num_agents || agentSources.size || Object.keys(metrics.agents || {}).length,
+            turnCount: manifest?.turn_count || turns.length || 1
         },
         answers,
         votes,
@@ -459,6 +588,130 @@ function renderHeader(data) {
     document.getElementById('duration').textContent = formatDuration(data.session.durationSeconds);
     document.getElementById('cost').textContent = `$${data.session.cost.toFixed(4)}`;
     document.getElementById('winner').textContent = data.session.winner || 'N/A';
+
+    // Render session status banner
+    renderSessionStatus(data);
+
+    // Render turn navigation if multi-turn
+    if (data.turns && data.turns.length > 1) {
+        renderTurnNavigation(data);
+    }
+}
+
+/**
+ * Render session status banner (complete/error/interrupted)
+ */
+function renderSessionStatus(data) {
+    const headerEl = document.querySelector('.session-header');
+    if (!headerEl) return;
+
+    // Remove existing status banner if any
+    const existingBanner = document.getElementById('session-status-banner');
+    if (existingBanner) {
+        existingBanner.remove();
+    }
+
+    const status = data.sessionStatus || 'complete';
+    if (status === 'complete') return; // Don't show banner for complete sessions
+
+    const banner = document.createElement('div');
+    banner.id = 'session-status-banner';
+    banner.className = `status-banner status-${status}`;
+
+    let icon = '';
+    let message = '';
+    if (status === 'error') {
+        icon = '⚠️';
+        message = 'This session ended with an error';
+        if (data.errorInfo) {
+            message += `: ${data.errorInfo.type || 'unknown'} - ${data.errorInfo.message || 'No details available'}`;
+        }
+    } else if (status === 'interrupted') {
+        icon = '⏸️';
+        message = 'This session was interrupted before completion';
+    } else if (status === 'timeout') {
+        icon = '⏱️';
+        message = 'This session timed out';
+    }
+
+    banner.innerHTML = `<span class="status-icon">${icon}</span> <span class="status-message">${escapeHtml(message)}</span>`;
+    headerEl.insertBefore(banner, headerEl.firstChild);
+}
+
+/**
+ * Render turn navigation for multi-turn sessions
+ */
+function renderTurnNavigation(data) {
+    const headerEl = document.querySelector('.session-header');
+    if (!headerEl) return;
+
+    // Remove existing nav if any
+    const existingNav = document.getElementById('turn-navigation');
+    if (existingNav) {
+        existingNav.remove();
+    }
+
+    const nav = document.createElement('div');
+    nav.id = 'turn-navigation';
+    nav.className = 'turn-navigation';
+
+    // Header
+    const header = document.createElement('div');
+    header.className = 'turn-nav-header';
+    header.innerHTML = `<strong>Turns:</strong> ${data.turns.length} total`;
+    nav.appendChild(header);
+
+    // Turn tabs
+    const tabs = document.createElement('div');
+    tabs.className = 'turn-tabs';
+
+    // Add "All" tab
+    const allTab = document.createElement('button');
+    allTab.className = `turn-tab ${currentTurn === null ? 'active' : ''}`;
+    allTab.textContent = 'All';
+    allTab.onclick = () => {
+        setCurrentTurn(null);
+        updateTurnTabs();
+    };
+    tabs.appendChild(allTab);
+
+    // Add individual turn tabs
+    for (const turn of data.turns) {
+        const tab = document.createElement('button');
+        const statusIcon = turn.status === 'complete' ? '✓' :
+                           turn.status === 'error' ? '✗' : '○';
+        const statusClass = turn.status === 'complete' ? 'complete' :
+                            turn.status === 'error' ? 'error' : 'pending';
+
+        tab.className = `turn-tab ${statusClass} ${currentTurn === turn.turn_number ? 'active' : ''}`;
+        tab.innerHTML = `<span class="turn-status-icon">${statusIcon}</span> Turn ${turn.turn_number}`;
+        tab.title = turn.question ? turn.question.substring(0, 100) : `Turn ${turn.turn_number}`;
+        tab.onclick = () => {
+            setCurrentTurn(turn.turn_number);
+            updateTurnTabs();
+        };
+        tabs.appendChild(tab);
+    }
+
+    nav.appendChild(tabs);
+    headerEl.appendChild(nav);
+}
+
+/**
+ * Update turn tab active states
+ */
+function updateTurnTabs() {
+    const tabs = document.querySelectorAll('.turn-tab');
+    tabs.forEach((tab, index) => {
+        if (index === 0) {
+            // "All" tab
+            tab.classList.toggle('active', currentTurn === null);
+        } else {
+            // Individual turn tabs
+            const turnNum = index; // turn_number is 1-indexed
+            tab.classList.toggle('active', currentTurn === turnNum);
+        }
+    });
 }
 
 /**
