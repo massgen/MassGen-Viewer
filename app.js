@@ -105,24 +105,36 @@ function getTurnsFromManifest(manifest) {
  * Set current turn for filtering data
  */
 function setCurrentTurn(turnNumber) {
+    console.log('[Turn Filter] setCurrentTurn called with:', turnNumber);
     currentTurn = turnNumber;
     // Update turn tab UI
     updateTurnTabs();
     // Re-render turn-dependent sections
     if (sessionData) {
+        console.log('[Turn Filter] sessionData exists, perTurnData keys:', Object.keys(sessionData.perTurnData || {}));
+        const filteredData = getDataForCurrentTurn(sessionData);
+        console.log('[Turn Filter] filtered coordination events:', filteredData.coordination?.events?.length);
+        console.log('[Turn Filter] filtered answers:', Object.keys(filteredData.answers || {}));
+        renderStats(sessionData);
+        renderAgents(sessionData);
         renderTimeline(sessionData);
         renderAnswers(sessionData);
         renderFinalAnswer(sessionData);
         renderOutputs(sessionData);
+    } else {
+        console.log('[Turn Filter] sessionData is null/undefined');
     }
 }
 
 /**
  * Extract turn number from file path
- * Handles paths like: turn_1__attempt_1__status.json or turn_2__attempt_1__agent_a__answer.txt
+ * Handles paths like:
+ *   - turn_1__attempt_1__status.json (flattened with __)
+ *   - turn_1/attempt_1/status.json (nested with /)
  */
 function extractTurnFromPath(path) {
-    const match = path.match(/^turn_(\d+)__/);
+    // Match either turn_X__ or turn_X/
+    const match = path.match(/^turn_(\d+)(?:__|\/)/);
     return match ? parseInt(match[1], 10) : null;
 }
 
@@ -645,10 +657,16 @@ function extractSessionData(files) {
  * Get data for the current turn (or all data if no turn selected)
  */
 function getDataForCurrentTurn(data) {
+    console.log('[getDataForCurrentTurn] currentTurn:', currentTurn, 'type:', typeof currentTurn);
+    console.log('[getDataForCurrentTurn] perTurnData keys:', Object.keys(data.perTurnData || {}));
+    console.log('[getDataForCurrentTurn] perTurnData[currentTurn]:', data.perTurnData?.[currentTurn]);
+
     if (currentTurn === null || !data.perTurnData || !data.perTurnData[currentTurn]) {
+        console.log('[getDataForCurrentTurn] returning unfiltered data');
         return data;
     }
     const turnData = data.perTurnData[currentTurn];
+    console.log('[getDataForCurrentTurn] turnData.coordination events:', turnData.coordination?.events?.length);
     return {
         ...data,
         metrics: turnData.metrics || data.metrics,
@@ -689,7 +707,13 @@ function escapeHtml(text) {
  * Render the session header
  */
 function renderHeader(data) {
-    document.getElementById('question').textContent = data.session.question;
+    // For multi-turn, show first turn's question initially (will be updated by turn selection)
+    const isMultiTurn = data.turns && data.turns.length > 1;
+    const displayQuestion = isMultiTurn && data.turns[0]?.question
+        ? data.turns[0].question
+        : data.session.question;
+
+    document.getElementById('question').textContent = displayQuestion;
     document.getElementById('date').textContent = data.session.startTime
         ? new Date(data.session.startTime * 1000).toLocaleString()
         : 'N/A';
@@ -701,8 +725,13 @@ function renderHeader(data) {
     renderSessionStatus(data);
 
     // Render turn navigation if multi-turn
-    if (data.turns && data.turns.length > 1) {
+    if (isMultiTurn) {
+        // Default to turn 1 for multi-turn sessions
+        currentTurn = 1;
         renderTurnNavigation(data);
+        // Hide "Try This Session" for multi-turn (it's confusing)
+        const trySection = document.getElementById('try-session-section');
+        if (trySection) trySection.style.display = 'none';
     }
 }
 
@@ -773,17 +802,7 @@ function renderTurnNavigation(data) {
     const tabs = document.createElement('div');
     tabs.className = 'turn-tabs';
 
-    // Add "All" tab
-    const allTab = document.createElement('button');
-    allTab.className = `turn-tab ${currentTurn === null ? 'active' : ''}`;
-    allTab.textContent = 'All';
-    allTab.onclick = () => {
-        setCurrentTurn(null);
-        updateTurnTabs();
-    };
-    tabs.appendChild(allTab);
-
-    // Add individual turn tabs
+    // Add individual turn tabs (no "All" tab - session totals are in header)
     for (const turn of data.turns) {
         const tab = document.createElement('button');
         const statusIcon = turn.status === 'complete' ? '✓' :
@@ -802,36 +821,233 @@ function renderTurnNavigation(data) {
     }
 
     nav.appendChild(tabs);
+
+    // Add conversation history button
+    const historyBtn = document.createElement('button');
+    historyBtn.id = 'conversation-history-btn';
+    historyBtn.className = 'conversation-history-btn';
+    historyBtn.innerHTML = `<span class="history-icon">💬</span> ${data.turns.length} turns`;
+    historyBtn.onclick = () => toggleConversationHistory();
+    nav.appendChild(historyBtn);
+
     headerEl.appendChild(nav);
+
+    // Create conversation history panel (hidden by default)
+    createConversationHistoryPanel(data);
 }
 
 /**
- * Update turn tab active states
+ * Create the conversation history floating panel
+ */
+function createConversationHistoryPanel(data) {
+    // Remove existing panel if any
+    const existing = document.getElementById('conversation-history-panel');
+    if (existing) existing.remove();
+
+    const panel = document.createElement('div');
+    panel.id = 'conversation-history-panel';
+    panel.className = 'conversation-history-panel hidden';
+
+    // Header
+    const header = document.createElement('div');
+    header.className = 'history-panel-header';
+    header.innerHTML = `
+        <span>Conversation History</span>
+        <button class="history-close-btn" onclick="toggleConversationHistory()">✕</button>
+    `;
+    panel.appendChild(header);
+
+    // Messages container
+    const messages = document.createElement('div');
+    messages.className = 'history-messages';
+
+    // Build conversation from turns
+    for (const turn of data.turns) {
+        // User message (the question/prompt)
+        const userMsg = document.createElement('div');
+        userMsg.className = 'history-message user-message';
+        userMsg.innerHTML = `
+            <div class="message-header">
+                <span class="message-role user-role">👤 You</span>
+                <span class="message-turn">Turn ${turn.turn_number}</span>
+            </div>
+            <div class="message-content">${escapeHtml(turn.question || 'No question')}</div>
+        `;
+        messages.appendChild(userMsg);
+
+        // Assistant message (the final answer for this turn)
+        const turnAnswers = Object.values(data.answers || {}).filter(a =>
+            a.turn === turn.turn_number && a.type === 'final_answer'
+        );
+        console.log('[ConvHistory] Turn', turn.turn_number, 'turnAnswers count:', turnAnswers.length);
+        const finalAnswer = turnAnswers[0]?.content || findFinalAnswerForTurn(data, turn.turn_number);
+        console.log('[ConvHistory] Turn', turn.turn_number, 'finalAnswer length:', finalAnswer?.length);
+
+        const assistantMsg = document.createElement('div');
+        assistantMsg.className = 'history-message assistant-message';
+
+        const needsTruncation = finalAnswer && finalAnswer.length > 500;
+        const contentPreview = finalAnswer
+            ? (needsTruncation ? finalAnswer.substring(0, 500) + '...' : finalAnswer)
+            : 'No response recorded';
+
+        // If truncation needed, show preview first; otherwise just show content
+        if (needsTruncation) {
+            assistantMsg.innerHTML = `
+                <div class="message-header">
+                    <span class="message-role assistant-role">🤖 MassGen</span>
+                    <span class="message-turn">Turn ${turn.turn_number}</span>
+                    <span class="message-winner">${turn.winner ? `Winner: ${turn.winner}` : ''}</span>
+                </div>
+                <div class="message-content message-preview">${escapeHtml(contentPreview)}</div>
+                <div class="message-content message-full hidden">${escapeHtml(finalAnswer)}</div>
+                <button class="show-more-btn" onclick="expandHistoryMessage(this)">▼ Show more</button>
+            `;
+        } else {
+            assistantMsg.innerHTML = `
+                <div class="message-header">
+                    <span class="message-role assistant-role">🤖 MassGen</span>
+                    <span class="message-turn">Turn ${turn.turn_number}</span>
+                    <span class="message-winner">${turn.winner ? `Winner: ${turn.winner}` : ''}</span>
+                </div>
+                <div class="message-content">${escapeHtml(contentPreview)}</div>
+            `;
+        }
+        messages.appendChild(assistantMsg);
+    }
+
+    panel.appendChild(messages);
+    document.body.appendChild(panel);
+}
+
+/**
+ * Find final answer for a specific turn from files
+ */
+function findFinalAnswerForTurn(data, turnNumber) {
+    const files = data.files || {};
+    for (const [path, content] of Object.entries(files)) {
+        const pathTurn = extractTurnFromPath(path);
+        if (pathTurn === turnNumber &&
+            (path.includes('final/') || path.includes('__final__')) &&
+            (path.endsWith('/answer.txt') || path.endsWith('__answer.txt'))) {
+            return content;
+        }
+    }
+    return null;
+}
+
+/**
+ * Toggle conversation history panel visibility
+ */
+function toggleConversationHistory() {
+    const panel = document.getElementById('conversation-history-panel');
+    if (panel) {
+        panel.classList.toggle('hidden');
+    }
+}
+
+/**
+ * Expand a history message to show full content
+ */
+function expandHistoryMessage(btn) {
+    const container = btn.parentElement;
+    const preview = container.querySelector('.message-preview');
+    const fullContent = container.querySelector('.message-full');
+
+    if (fullContent && preview) {
+        const isExpanded = !fullContent.classList.contains('hidden');
+        if (isExpanded) {
+            // Collapse: show preview, hide full
+            fullContent.classList.add('hidden');
+            preview.classList.remove('hidden');
+            btn.textContent = '▼ Show more';
+        } else {
+            // Expand: hide preview, show full
+            preview.classList.add('hidden');
+            fullContent.classList.remove('hidden');
+            btn.textContent = '▲ Show less';
+        }
+    }
+}
+
+/**
+ * Update turn tab active states and header metadata
  */
 function updateTurnTabs() {
     const tabs = document.querySelectorAll('.turn-tab');
     tabs.forEach((tab, index) => {
-        if (index === 0) {
-            // "All" tab
-            tab.classList.toggle('active', currentTurn === null);
-        } else {
-            // Individual turn tabs
-            const turnNum = index; // turn_number is 1-indexed
-            tab.classList.toggle('active', currentTurn === turnNum);
-        }
+        // Turn numbers are 1-indexed, so index 0 = turn 1
+        const turnNum = index + 1;
+        tab.classList.toggle('active', currentTurn === turnNum);
     });
+
+    // Update header to show current turn's metadata
+    if (sessionData && sessionData.turns && currentTurn !== null) {
+        const currentTurnData = sessionData.turns.find(t => t.turn_number === currentTurn);
+        if (currentTurnData) {
+            // Update question
+            const questionEl = document.getElementById('question');
+            if (questionEl && currentTurnData.question) {
+                questionEl.textContent = currentTurnData.question;
+            }
+
+            // Update winner
+            const winnerEl = document.getElementById('winner');
+            if (winnerEl) {
+                winnerEl.textContent = currentTurnData.winner || 'N/A';
+            }
+        }
+
+        // Update date, duration, cost from per-turn data
+        const turnData = sessionData.perTurnData?.[currentTurn];
+        if (turnData) {
+            const statusMeta = turnData.status?.meta || {};
+            const metricsTotals = turnData.metrics?.totals || {};
+
+            // Date from turn's start time
+            const dateEl = document.getElementById('date');
+            if (dateEl && statusMeta.start_time) {
+                dateEl.textContent = new Date(statusMeta.start_time * 1000).toLocaleString();
+            }
+
+            // Duration from turn's elapsed time
+            const durationEl = document.getElementById('duration');
+            if (durationEl && statusMeta.elapsed_seconds) {
+                durationEl.textContent = formatDuration(statusMeta.elapsed_seconds);
+            }
+
+            // Cost from turn's metrics
+            const costEl = document.getElementById('cost');
+            if (costEl) {
+                const cost = metricsTotals.estimated_cost || 0;
+                costEl.textContent = `$${cost.toFixed(4)}`;
+            }
+        }
+    }
 }
 
 /**
  * Render stats grid
  */
 function renderStats(data) {
-    const totalTokens = data.session.inputTokens + data.session.outputTokens + data.session.reasoningTokens;
+    // Use turn-filtered data for stats
+    const filteredData = getDataForCurrentTurn(data);
+    const metrics = filteredData.metrics || {};
+    const totals = metrics.totals || {};
 
-    document.getElementById('stat-cost').textContent = `$${data.session.cost.toFixed(2)}`;
+    // If filtering by turn, use turn-specific totals; otherwise session totals
+    const cost = currentTurn !== null ? (totals.estimated_cost || 0) : data.session.cost;
+    const inputTokens = currentTurn !== null ? (totals.input_tokens || 0) : data.session.inputTokens;
+    const outputTokens = currentTurn !== null ? (totals.output_tokens || 0) : data.session.outputTokens;
+    const reasoningTokens = currentTurn !== null ? (totals.reasoning_tokens || 0) : data.session.reasoningTokens;
+    const totalTokens = inputTokens + outputTokens + reasoningTokens;
+    const totalRounds = currentTurn !== null ? (metrics.rounds?.total_rounds || 0) : data.session.totalRounds;
+    const totalToolCalls = currentTurn !== null ? (metrics.tools?.total_calls || 0) : data.session.totalToolCalls;
+
+    document.getElementById('stat-cost').textContent = `$${cost.toFixed(4)}`;
     document.getElementById('stat-tokens').textContent = formatNumber(totalTokens);
-    document.getElementById('stat-tools').textContent = data.session.totalToolCalls;
-    document.getElementById('stat-rounds').textContent = data.session.totalRounds;
+    document.getElementById('stat-tools').textContent = totalToolCalls;
+    document.getElementById('stat-rounds').textContent = totalRounds;
     document.getElementById('stat-agents').textContent = data.session.numAgents;
 }
 
@@ -840,8 +1056,10 @@ function renderStats(data) {
  */
 function renderAgents(data) {
     const container = document.getElementById('agents-container');
-    const agents = data.metrics.agents || {};
-    const statusAgents = data.status.agents || {};
+    // Use turn-filtered data
+    const filteredData = getDataForCurrentTurn(data);
+    const agents = filteredData.metrics.agents || {};
+    const statusAgents = filteredData.status.agents || {};
     const winner = data.session.winner;
 
     // Also try to get agent list from execution metadata config
@@ -998,6 +1216,7 @@ function renderTimeline(data) {
     // Use turn-filtered data
     const filteredData = getDataForCurrentTurn(data);
     const events = filteredData.coordination.events || [];
+    console.log('[renderTimeline] currentTurn:', currentTurn, 'events count:', events.length);
 
     // Filter to only answers, votes, and final answer
     const graphEvents = events.filter(e =>
@@ -1755,7 +1974,39 @@ function renderFinalAnswer(data) {
  */
 function renderOutputs(data) {
     const container = document.getElementById('outputs-container');
-    const outputs = data.agentOutputs;
+
+    // Filter agent outputs by current turn
+    const outputs = {};
+    for (const [path, content] of Object.entries(data.files || {})) {
+        // Handle both formats: turn_X/attempt_Y/agent_outputs/agent.txt and turn_X__attempt_Y__agent_outputs__agent.txt
+        const isAgentOutput = path.includes('agent_outputs/') || path.includes('__agent_outputs__');
+        const isTextFile = path.endsWith('.txt');
+
+        if (isAgentOutput && isTextFile) {
+            const turnNum = extractTurnFromPath(path);
+            // Filter by current turn if set
+            if (currentTurn !== null && turnNum !== null && turnNum !== currentTurn) {
+                continue;
+            }
+
+            // Extract agent name from path
+            let filename;
+            if (path.includes('__agent_outputs__')) {
+                // Flattened: turn_1__attempt_1__agent_outputs__agent_a.txt
+                const parts = path.split('__');
+                filename = parts[parts.length - 1].replace('.txt', '');
+            } else {
+                // Nested: turn_1/attempt_1/agent_outputs/agent_a.txt
+                const parts = path.split('/');
+                filename = parts[parts.length - 1].replace('.txt', '');
+            }
+
+            // Skip system_status and _latest files
+            if (filename !== 'system_status' && !filename.endsWith('_latest')) {
+                outputs[filename] = content;
+            }
+        }
+    }
 
     if (Object.keys(outputs).length === 0) {
         container.innerHTML = '<div class="no-data">No agent output logs available</div>';
