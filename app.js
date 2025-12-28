@@ -106,13 +106,43 @@ function getTurnsFromManifest(manifest) {
  */
 function setCurrentTurn(turnNumber) {
     currentTurn = turnNumber;
+    // Update turn tab UI
+    updateTurnTabs();
     // Re-render turn-dependent sections
     if (sessionData) {
-        renderAgents(sessionData);
-        renderAnswers(sessionData);
         renderTimeline(sessionData);
-        renderWorkspace(sessionData);
+        renderAnswers(sessionData);
+        renderFinalAnswer(sessionData);
+        renderOutputs(sessionData);
     }
+}
+
+/**
+ * Extract turn number from file path
+ * Handles paths like: turn_1__attempt_1__status.json or turn_2__attempt_1__agent_a__answer.txt
+ */
+function extractTurnFromPath(path) {
+    const match = path.match(/^turn_(\d+)__/);
+    return match ? parseInt(match[1], 10) : null;
+}
+
+/**
+ * Filter files by current turn
+ * Returns all files if currentTurn is null, otherwise only files for that turn
+ */
+function filterFilesByTurn(files) {
+    if (currentTurn === null) {
+        return files;
+    }
+    const filtered = {};
+    for (const [path, content] of Object.entries(files)) {
+        const turnNum = extractTurnFromPath(path);
+        // Include files from the current turn, or files without turn prefix (legacy)
+        if (turnNum === currentTurn || turnNum === null) {
+            filtered[path] = content;
+        }
+    }
+    return filtered;
 }
 
 /**
@@ -332,8 +362,37 @@ function processFileContent(files, filename, path, content) {
  * Extract agent info from path - handles both old and new formats
  * Old: agent_a/timestamp/answer.txt
  * New: turn_1/attempt_1/agent_a/timestamp/answer.txt
+ * Flattened: turn_1__attempt_1__agent_a__20251228_123456__answer.txt
  */
 function extractAgentFromPath(path) {
+    // Check if this is a flattened path (uses __ separator)
+    if (path.includes('__') && !path.includes('/')) {
+        const parts = path.split('__');
+        // Pattern: turn_X__attempt_Y__agent_id__timestamp__filename
+        // or: turn_X__attempt_Y__final__agent_id__filename
+        let agentId = null;
+        let timestamp = null;
+
+        for (let i = 0; i < parts.length; i++) {
+            const part = parts[i];
+            // Skip turn_X and attempt_Y
+            if (part.startsWith('turn_') || part.startsWith('attempt_')) continue;
+            // Skip 'final' marker
+            if (part === 'final') continue;
+            // Agent IDs typically start with 'agent_' or contain known patterns
+            if (part.startsWith('agent_') || part.match(/^[a-z]+_[a-z]$/)) {
+                agentId = part;
+                // Next part might be timestamp (starts with digit, like 20251228_123456)
+                if (i + 1 < parts.length && parts[i + 1].match(/^\d{8}_\d+/)) {
+                    timestamp = parts[i + 1];
+                }
+                break;
+            }
+        }
+        return { agentId, timestamp, startIdx: 0 };
+    }
+
+    // Original path-based logic
     const parts = path.split('/');
     // Skip turn_X/attempt_Y prefixes if present
     let startIdx = 0;
@@ -354,23 +413,45 @@ function extractAgentFromPath(path) {
  */
 function extractSessionData(files) {
     // Look for metrics/status files with various path patterns
+    // Store per-turn data for multi-turn filtering
     let metrics = {};
     let status = {};
     let coordination = {};
     let snapshotMappings = {};
 
+    // Per-turn data storage: { turnNumber: { metrics, status, coordination, ... } }
+    const perTurnData = {};
+
     for (const [path, content] of Object.entries(files)) {
+        const turnNum = extractTurnFromPath(path);
+
+        // Initialize per-turn storage if needed
+        if (turnNum !== null && !perTurnData[turnNum]) {
+            perTurnData[turnNum] = {
+                metrics: {},
+                status: {},
+                coordination: {},
+                snapshotMappings: {},
+                answers: {},
+                votes: {}
+            };
+        }
+
         if (path.endsWith('metrics_summary.json') && typeof content === 'object') {
             metrics = content;
+            if (turnNum !== null) perTurnData[turnNum].metrics = content;
         }
         if (path.endsWith('status.json') && typeof content === 'object') {
             status = content;
+            if (turnNum !== null) perTurnData[turnNum].status = content;
         }
         if (path.endsWith('coordination_events.json') && typeof content === 'object') {
             coordination = content;
+            if (turnNum !== null) perTurnData[turnNum].coordination = content;
         }
         if (path.endsWith('snapshot_mappings.json') && typeof content === 'object') {
             snapshotMappings = content;
+            if (turnNum !== null) perTurnData[turnNum].snapshotMappings = content;
         }
     }
 
@@ -396,17 +477,25 @@ function extractSessionData(files) {
     // Extract answers from files
     const answers = {};
     for (const [path, content] of Object.entries(files)) {
-        if (path.includes('/answer.txt') && typeof content === 'string') {
+        // Handle both flattened (turn_1__attempt_1__agent_a__ts__answer.txt) and nested paths
+        if ((path.endsWith('__answer.txt') || path.includes('/answer.txt')) && typeof content === 'string') {
+            const turnNum = extractTurnFromPath(path);
             const { agentId, timestamp } = extractAgentFromPath(path);
             if (agentId && timestamp) {
                 const label = `${agentId}.${timestamp}`;
-                answers[label] = {
+                const answerData = {
                     label,
                     agent_id: agentId,
-                    timestamp: timestamp,  // Store timestamp for workspace matching
+                    timestamp: timestamp,
                     content: content,
-                    type: path.includes('final/') || path.includes('/final/') ? 'final_answer' : 'answer'
+                    turn: turnNum,
+                    type: path.includes('final/') || path.includes('__final__') ? 'final_answer' : 'answer'
                 };
+                answers[label] = answerData;
+                // Also store in per-turn data
+                if (turnNum !== null && perTurnData[turnNum]) {
+                    perTurnData[turnNum].answers[label] = answerData;
+                }
             }
         }
     }
@@ -530,6 +619,7 @@ function extractSessionData(files) {
         sessionStatus,
         errorInfo,
         turns,
+        perTurnData,  // Per-turn data for filtering
         session: {
             question: finalQuestion,
             winner: finalWinner,
@@ -548,6 +638,24 @@ function extractSessionData(files) {
         votes,
         agentOutputs,
         files
+    };
+}
+
+/**
+ * Get data for the current turn (or all data if no turn selected)
+ */
+function getDataForCurrentTurn(data) {
+    if (currentTurn === null || !data.perTurnData || !data.perTurnData[currentTurn]) {
+        return data;
+    }
+    const turnData = data.perTurnData[currentTurn];
+    return {
+        ...data,
+        metrics: turnData.metrics || data.metrics,
+        status: turnData.status || data.status,
+        coordination: turnData.coordination || data.coordination,
+        snapshotMappings: turnData.snapshotMappings || data.snapshotMappings,
+        answers: turnData.answers || {}
     };
 }
 
@@ -887,7 +995,9 @@ function renderTools(data) {
  */
 function renderTimeline(data) {
     const container = document.getElementById('timeline-container');
-    const events = data.coordination.events || [];
+    // Use turn-filtered data
+    const filteredData = getDataForCurrentTurn(data);
+    const events = filteredData.coordination.events || [];
 
     // Filter to only answers, votes, and final answer
     const graphEvents = events.filter(e =>
@@ -1364,8 +1474,10 @@ function renderInlineWorkspace(agentId, timestamp, workspaceFiles) {
  */
 function renderAnswers(data) {
     const container = document.getElementById('answers-container');
-    const answers = data.answers;
-    const votes = data.votes; // Now an object of arrays: { agent_id: [vote1, vote2, ...] }
+    // Use turn-filtered data
+    const filteredData = getDataForCurrentTurn(data);
+    const answers = filteredData.answers;
+    const votes = data.votes; // Votes are session-wide
     const winner = data.session.winner;
     const workspaceFiles = data.workspaceFiles || {};
 
@@ -1618,10 +1730,13 @@ function extractShortLabel(fullLabel) {
 function renderFinalAnswer(data) {
     const container = document.getElementById('final-answer');
 
+    // Use turn-filtered files
+    const filteredFiles = filterFilesByTurn(data.files);
+
     // Try to find final answer in files
     let finalAnswer = '';
-    for (const [path, content] of Object.entries(data.files)) {
-        if (path.includes('final/') && path.endsWith('/answer.txt')) {
+    for (const [path, content] of Object.entries(filteredFiles)) {
+        if ((path.includes('final/') || path.includes('__final__')) && (path.endsWith('/answer.txt') || path.endsWith('__answer.txt'))) {
             finalAnswer = content;
             break;
         }
