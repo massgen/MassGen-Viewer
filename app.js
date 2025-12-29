@@ -109,6 +109,11 @@ function setCurrentTurn(turnNumber) {
     currentTurn = turnNumber;
     // Update turn tab UI
     updateTurnTabs();
+    // Show/hide "Try This Session" based on turn (only show on Turn 1)
+    const trySection = document.getElementById('try-session-section');
+    if (trySection) {
+        trySection.style.display = (turnNumber === 1 || turnNumber === null) ? '' : 'none';
+    }
     // Re-render turn-dependent sections
     if (sessionData) {
         console.log('[Turn Filter] sessionData exists, perTurnData keys:', Object.keys(sessionData.perTurnData || {}));
@@ -512,10 +517,11 @@ function extractSessionData(files) {
         }
     }
 
-    // Extract votes from files - collect ALL votes per agent
+    // Extract votes from files - collect ALL votes per agent, with turn info
     const votes = {};
     for (const [path, content] of Object.entries(files)) {
-        if (path.endsWith('/vote.json') && typeof content === 'object') {
+        if ((path.endsWith('/vote.json') || path.endsWith('__vote.json')) && typeof content === 'object') {
+            const turnNum = extractTurnFromPath(path);
             const { agentId, timestamp } = extractAgentFromPath(path);
             if (agentId) {
                 if (!votes[agentId]) {
@@ -531,7 +537,8 @@ function extractSessionData(files) {
                     timestamp: timestamp || '',
                     coordination_round: content.coordination_round,
                     available_options: content.available_options || [],
-                    agent_mapping: content.agent_mapping || {}
+                    agent_mapping: content.agent_mapping || {},
+                    turn: turnNum
                 });
             }
         }
@@ -729,9 +736,7 @@ function renderHeader(data) {
         // Default to turn 1 for multi-turn sessions
         currentTurn = 1;
         renderTurnNavigation(data);
-        // Hide "Try This Session" for multi-turn (it's confusing)
-        const trySection = document.getElementById('try-session-section');
-        if (trySection) trySection.style.display = 'none';
+        // Note: "Try This Session" is shown/hidden based on current turn in updateTurnDisplay
     }
 }
 
@@ -1696,19 +1701,25 @@ function renderAnswers(data) {
     // Use turn-filtered data
     const filteredData = getDataForCurrentTurn(data);
     const answers = filteredData.answers;
-    const votes = data.votes; // Votes are session-wide
+    // Filter votes by current turn
+    const allVotes = data.votes;
+    const votes = {};
+    for (const [agentId, agentVotes] of Object.entries(allVotes)) {
+        const filteredVotes = agentVotes.filter(v =>
+            currentTurn === null || v.turn === null || v.turn === currentTurn
+        );
+        if (filteredVotes.length > 0) {
+            votes[agentId] = filteredVotes;
+        }
+    }
     const winner = data.session.winner;
     const workspaceFiles = data.workspaceFiles || {};
+    const statusAgents = filteredData.status?.agents || {};
 
     // Filter out final answers - they're shown in the Final Answer section
     const intermediateAnswers = Object.entries(answers)
         .filter(([label, answer]) => answer.type !== 'final_answer')
         .sort((a, b) => a[0].localeCompare(b[0]));
-
-    if (intermediateAnswers.length === 0) {
-        container.innerHTML = '<div class="no-data">No intermediate answers recorded</div>';
-        return;
-    }
 
     // Build a map of all answer labels to their content (for vote options display)
     const allAnswerLabels = {};
@@ -1732,18 +1743,38 @@ function renderAnswers(data) {
         answersByAgent[agentId].push({ label, answer });
     });
 
-    const agentIds = Object.keys(answersByAgent).sort();
+    // Get all agent IDs - include agents with errors but no answers
+    const allAgentIds = new Set(Object.keys(answersByAgent));
+    Object.keys(statusAgents).forEach(id => allAgentIds.add(id));
+    const agentIds = Array.from(allAgentIds).sort();
+
+    // Get error info for each agent
+    const agentErrors = {};
+    for (const [agentId, agentStatus] of Object.entries(statusAgents)) {
+        if (agentStatus.error) {
+            agentErrors[agentId] = agentStatus.error;
+        } else if (agentStatus.status === 'error') {
+            agentErrors[agentId] = { type: 'error', message: 'Agent encountered an error' };
+        }
+    }
+
+    if (agentIds.length === 0) {
+        container.innerHTML = '<div class="no-data">No agent activity recorded</div>';
+        return;
+    }
 
     // Build agent tabs
     let html = '<div class="agent-tabs">';
     agentIds.forEach((agentId, index) => {
         const isWinner = agentId === winner;
         const isFirst = index === 0;
-        const answerCount = answersByAgent[agentId].length;
+        const hasError = !!agentErrors[agentId];
+        const answerCount = answersByAgent[agentId]?.length || 0;
         html += `
-            <div class="agent-tab ${isFirst ? 'active' : ''} ${isWinner ? 'winner-tab' : ''}" data-agent="${escapeHtml(agentId)}">
+            <div class="agent-tab ${isFirst ? 'active' : ''} ${isWinner ? 'winner-tab' : ''} ${hasError ? 'error-tab' : ''}" data-agent="${escapeHtml(agentId)}">
                 ${escapeHtml(agentId)}
                 ${isWinner ? '<span class="winner-dot"></span>' : ''}
+                ${hasError && !isWinner ? '<span class="error-dot" title="Agent error">!</span>' : ''}
                 <span class="tab-count">${answerCount}</span>
             </div>
         `;
@@ -1753,10 +1784,11 @@ function renderAnswers(data) {
     // Build content panels for each agent
     html += '<div class="agent-panels">';
     agentIds.forEach((agentId, agentIndex) => {
-        const agentAnswers = answersByAgent[agentId];
+        const agentAnswers = answersByAgent[agentId] || [];
         const agentVotes = votes[agentId] || []; // Array of votes
         const agentWorkspaceByTimestamp = workspaceFiles[agentId] || {}; // { timestamp: { filePath: content } }
         const isFirst = agentIndex === 0;
+        const agentError = agentErrors[agentId];
 
         // Determine agent number (1, 2, etc.) for answer labeling
         const agentNum = agentIndex + 1;
@@ -1777,6 +1809,20 @@ function renderAnswers(data) {
 
         // Answers sub-panel - now includes workspace files for each answer
         html += '<div class="sub-panel active" data-subtab="answers">';
+
+        // Show error banner if agent has error and no answers
+        if (agentError && agentAnswers.length === 0) {
+            html += `
+                <div class="agent-error-banner">
+                    <span class="error-icon">⚠️</span>
+                    <div class="error-details">
+                        <div class="error-type">${escapeHtml(agentError.type || 'Error')}</div>
+                        <div class="error-message">${escapeHtml(agentError.message || 'Agent encountered an error')}</div>
+                    </div>
+                </div>
+            `;
+        }
+
         agentAnswers.forEach(({ label, answer }, idx) => {
             const answerNum = idx + 1;
             const shortLabel = `${agentNum}.${answerNum}`;
