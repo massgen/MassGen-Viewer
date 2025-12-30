@@ -14,6 +14,35 @@ let currentTurn = null; // For multi-turn navigation
 let sessionManifest = null; // Parsed from _session_manifest.json
 
 // =============================================================================
+// Office Document Helpers (for smart PDF preview)
+// =============================================================================
+
+/**
+ * Office document extensions that have pre-converted PDF versions
+ */
+const OFFICE_EXTENSIONS = ['.docx', '.pptx', '.xlsx'];
+
+/**
+ * Check if a file is an Office document
+ * @param {string} fileName - The file name
+ * @returns {boolean}
+ */
+function isOfficeDocument(fileName) {
+    const lowerName = fileName.toLowerCase();
+    return OFFICE_EXTENSIONS.some(ext => lowerName.endsWith(ext));
+}
+
+/**
+ * Get the PDF version path for an Office document
+ * For example: "report.docx" -> "report.docx.pdf"
+ * @param {string} filePath - The original file path
+ * @returns {string} The PDF version path
+ */
+function getPdfVersionPath(filePath) {
+    return filePath + '.pdf';
+}
+
+// =============================================================================
 // Session Manifest Functions (Multi-Turn Support)
 // =============================================================================
 
@@ -578,14 +607,17 @@ function extractSessionData(files) {
     //         or: agent_a/timestamp/workspace/file.txt
     // Key by agentId/timestamp so we can associate with specific answers
     const workspaceFiles = {};  // { agentId: { timestamp: { filePath: content } } }
+    // Also track per-turn workspace files: { turnNumber: { agentId: { timestamp: { filePath: content } } } }
+    const turnWorkspaceFiles = {};
     for (const [path, content] of Object.entries(files)) {
         if (path.includes('/workspace/') && typeof content === 'string') {
             // Extract everything after 'workspace/'
             const wsIdx = path.indexOf('/workspace/');
             const relativePath = path.substring(wsIdx + 11); // Skip '/workspace/'
 
-            // Extract agent ID and timestamp from path
+            // Extract agent ID, timestamp, and turn from path
             const { agentId, timestamp } = extractAgentFromPath(path);
+            const turnNum = extractTurnFromPath(path);
 
             if (agentId && relativePath) {
                 if (!workspaceFiles[agentId]) {
@@ -597,6 +629,20 @@ function extractSessionData(files) {
                     workspaceFiles[agentId][tsKey] = {};
                 }
                 workspaceFiles[agentId][tsKey][relativePath] = content;
+
+                // Also store in per-turn structure for filtering
+                if (turnNum !== null) {
+                    if (!turnWorkspaceFiles[turnNum]) {
+                        turnWorkspaceFiles[turnNum] = {};
+                    }
+                    if (!turnWorkspaceFiles[turnNum][agentId]) {
+                        turnWorkspaceFiles[turnNum][agentId] = {};
+                    }
+                    if (!turnWorkspaceFiles[turnNum][agentId][tsKey]) {
+                        turnWorkspaceFiles[turnNum][agentId][tsKey] = {};
+                    }
+                    turnWorkspaceFiles[turnNum][agentId][tsKey][relativePath] = content;
+                }
             }
         }
     }
@@ -633,6 +679,7 @@ function extractSessionData(files) {
         snapshotMappings,
         executionMetadata,
         workspaceFiles,
+        turnWorkspaceFiles,  // Per-turn workspace files for filtering
         manifest,
         isLegacy,
         sessionStatus,
@@ -674,13 +721,16 @@ function getDataForCurrentTurn(data) {
     }
     const turnData = data.perTurnData[currentTurn];
     console.log('[getDataForCurrentTurn] turnData.coordination events:', turnData.coordination?.events?.length);
+    // Get workspace files for this turn, or fall back to all workspace files
+    const turnWsFiles = data.turnWorkspaceFiles?.[currentTurn] || data.workspaceFiles;
     return {
         ...data,
         metrics: turnData.metrics || data.metrics,
         status: turnData.status || data.status,
         coordination: turnData.coordination || data.coordination,
         snapshotMappings: turnData.snapshotMappings || data.snapshotMappings,
-        answers: turnData.answers || {}
+        answers: turnData.answers || {},
+        workspaceFiles: turnWsFiles
     };
 }
 
@@ -1174,7 +1224,9 @@ function renderAgents(data) {
  */
 function renderTools(data) {
     const container = document.getElementById('tools-container');
-    const tools = data.metrics.tools?.by_tool || {};
+    // Use turn-filtered data for tools
+    const filteredData = getDataForCurrentTurn(data);
+    const tools = filteredData.metrics.tools?.by_tool || {};
 
     if (Object.keys(tools).length === 0) {
         container.innerHTML = '<div class="no-data">No tool data available</div>';
@@ -1660,16 +1712,28 @@ function renderInlineWorkspace(agentId, timestamp, workspaceFiles) {
             ? `${(content.length / 1024).toFixed(1)} KB`
             : `${content.length} B`;
 
+        // Check if file can be previewed
+        const isPreviewable = window.canPreviewArtifact ? window.canPreviewArtifact(filePath, content) : false;
+        const previewBadge = isPreviewable ? '<span class="preview-badge">Preview</span>' : '';
+        // Check if this is an Office document with a PDF version available
+        const pdfPath = filePath + '.pdf';
+        const hasPdfVersion = isOfficeDocument(filePath) && workspaceFiles[pdfPath];
+        // Store data attributes for preview button
+        const previewButton = isPreviewable
+            ? `<button class="ws-action-btn preview-btn" onclick="event.stopPropagation(); openArtifactPreviewFromElement(this)" data-filename="${escapeHtml(filePath)}" data-fileid="${fileId}" data-has-pdf="${hasPdfVersion}" data-pdf-path="${hasPdfVersion ? escapeHtml(pdfPath) : ''}">👁️ Preview</button>`
+            : '';
+
         html += `
             <div class="workspace-file" id="file-${fileId}">
                 <div class="workspace-file-header" onclick="toggleWorkspaceFile('${fileId}')">
                     <span class="workspace-file-icon">${getFileIcon(fileExt)}</span>
-                    <span class="workspace-file-path">${escapeHtml(filePath)}</span>
+                    <span class="workspace-file-path">${escapeHtml(filePath)}${previewBadge}</span>
                     <span class="workspace-file-size">${sizeStr}</span>
                     <span class="workspace-file-toggle">▶</span>
                 </div>
                 <div class="workspace-file-content">
                     <div class="workspace-file-actions">
+                        ${previewButton}
                         <button class="ws-action-btn" onclick="copyWorkspaceFileInline('${fileId}')">
                             📋 Copy
                         </button>
@@ -1713,7 +1777,8 @@ function renderAnswers(data) {
         }
     }
     const winner = data.session.winner;
-    const workspaceFiles = data.workspaceFiles || {};
+    // Use turn-filtered workspace files
+    const workspaceFiles = filteredData.workspaceFiles || {};
     const statusAgents = filteredData.status?.agents || {};
 
     // Filter out final answers - they're shown in the Final Answer section
@@ -2269,27 +2334,185 @@ function renderGistLink(gistId) {
 }
 
 /**
- * Render workspace browser with copy/download functionality
+ * Build a directory tree from flat file paths
+ * Returns: { name: string, path: string, children: Map, files: Map }
+ */
+function buildDirectoryTree(files) {
+    const root = { name: '', path: '', children: new Map(), files: new Map() };
+
+    for (const [filePath, content] of Object.entries(files)) {
+        const parts = filePath.split('/');
+        let current = root;
+
+        // Navigate/create directory structure
+        for (let i = 0; i < parts.length - 1; i++) {
+            const dirName = parts[i];
+            const dirPath = parts.slice(0, i + 1).join('/');
+            if (!current.children.has(dirName)) {
+                current.children.set(dirName, {
+                    name: dirName,
+                    path: dirPath,
+                    children: new Map(),
+                    files: new Map()
+                });
+            }
+            current = current.children.get(dirName);
+        }
+
+        // Add file to current directory
+        const fileName = parts[parts.length - 1];
+        current.files.set(fileName, { path: filePath, content });
+    }
+
+    return root;
+}
+
+/**
+ * Render a directory tree node recursively
+ */
+function renderTreeNode(node, agentId, depth = 0) {
+    let html = '';
+    const indent = depth * 16; // 16px per level
+
+    // Render subdirectories first (sorted)
+    const sortedDirs = Array.from(node.children.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    for (const [dirName, dirNode] of sortedDirs) {
+        const folderId = `folder-${agentId}__${dirNode.path}`.replace(/[^a-zA-Z0-9]/g, '_');
+        const fileCount = countFilesInTree(dirNode);
+
+        html += `
+            <div class="tree-folder" id="${folderId}" style="padding-left: ${indent}px">
+                <div class="tree-folder-header" onclick="toggleTreeFolder('${folderId}')">
+                    <span class="tree-folder-icon">📁</span>
+                    <span class="tree-folder-name">${escapeHtml(dirName)}/</span>
+                    <span class="tree-folder-count">${fileCount}</span>
+                    <span class="tree-folder-toggle">▶</span>
+                </div>
+                <div class="tree-folder-content">
+                    ${renderTreeNode(dirNode, agentId, depth + 1)}
+                </div>
+            </div>
+        `;
+    }
+
+    // Render files in this directory (sorted)
+    const sortedFiles = Array.from(node.files.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    for (const [fileName, fileData] of sortedFiles) {
+        const fileExt = fileName.split('.').pop().toLowerCase();
+        const langClass = ['py', 'js', 'ts', 'json', 'yaml', 'yml', 'sh', 'html', 'css', 'md', 'txt'].includes(fileExt)
+            ? `language-${fileExt}` : '';
+        const fileId = `${agentId}__${fileData.path}`.replace(/[^a-zA-Z0-9]/g, '_');
+        const sizeStr = fileData.content.length > 1024
+            ? `${(fileData.content.length / 1024).toFixed(1)} KB`
+            : `${fileData.content.length} B`;
+
+        // Check if file can be previewed using React renderers
+        const isPreviewable = window.canPreviewArtifact ? window.canPreviewArtifact(fileName, fileData.content) : false;
+        const previewBadge = isPreviewable ? '<span class="preview-badge">Preview</span>' : '';
+        // Use smart preview for Office documents (will use PDF version if available)
+        const previewButton = isPreviewable
+            ? `<button class="tree-file-preview" onclick="event.stopPropagation(); openSmartArtifactPreview(sessionData.workspaceFiles['${escapeHtml(agentId)}']['${escapeHtml(fileData.path)}'], '${escapeHtml(fileName)}', '${escapeHtml(agentId)}', '${escapeHtml(fileData.path)}')">Preview</button>`
+            : '';
+
+        html += `
+            <div class="tree-file" id="file-${fileId}" style="padding-left: ${indent}px">
+                <div class="tree-file-header" onclick="toggleWorkspaceFile('${fileId}')">
+                    <span class="tree-file-icon">${getFileIcon(fileExt)}</span>
+                    <span class="tree-file-name">${escapeHtml(fileName)}${previewBadge}</span>
+                    <span class="tree-file-size">${sizeStr}</span>
+                    <span class="tree-file-toggle">▶</span>
+                </div>
+                <div class="tree-file-content">
+                    <div class="workspace-file-actions">
+                        ${previewButton}
+                        <button class="ws-action-btn" onclick="copyWorkspaceFile('${escapeHtml(agentId)}', '${escapeHtml(fileData.path)}')">
+                            📋 Copy
+                        </button>
+                        <button class="ws-action-btn" onclick="downloadWorkspaceFile('${escapeHtml(agentId)}', '${escapeHtml(fileData.path)}')">
+                            ⬇️ Download
+                        </button>
+                    </div>
+                    <div class="workspace-file-code">
+                        <pre class="${langClass}">${escapeHtml(fileData.content)}</pre>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    return html;
+}
+
+/**
+ * Count total files in a tree node (recursive)
+ */
+function countFilesInTree(node) {
+    let count = node.files.size;
+    for (const child of node.children.values()) {
+        count += countFilesInTree(child);
+    }
+    return count;
+}
+
+/**
+ * Toggle tree folder expansion
+ */
+window.toggleTreeFolder = function(folderId) {
+    const folderEl = document.getElementById(folderId);
+    if (folderEl) {
+        folderEl.classList.toggle('expanded');
+    }
+};
+
+/**
+ * Flatten workspace files from nested timestamp structure to flat file map
+ * Input: { timestamp: { filePath: content } }
+ * Output: { filePath: content }
+ */
+function flattenWorkspaceFiles(agentFiles) {
+    const flat = {};
+    for (const [timestamp, files] of Object.entries(agentFiles)) {
+        if (typeof files === 'object') {
+            for (const [path, content] of Object.entries(files)) {
+                // Prefix with timestamp if multiple timestamps exist
+                flat[path] = content;
+            }
+        }
+    }
+    return flat;
+}
+
+/**
+ * Render workspace browser with copy/download functionality and directory tree
  */
 function renderWorkspace(data) {
     const container = document.getElementById('workspace-container');
     if (!container) return;
 
-    const workspaceFiles = data.workspaceFiles;
+    // Use turn-filtered data for workspace files
+    const filteredData = getDataForCurrentTurn(data);
+    const workspaceFiles = filteredData.workspaceFiles;
 
     if (!workspaceFiles || Object.keys(workspaceFiles).length === 0) {
         container.innerHTML = '<div class="no-data">No workspace files available</div>';
         return;
     }
 
-    // Store files globally for copy/download
-    window._workspaceFiles = workspaceFiles;
+    // Store files globally for copy/download (flatten nested structure)
+    window._workspaceFiles = {};
+    for (const [agentId, agentFiles] of Object.entries(workspaceFiles)) {
+        window._workspaceFiles[agentId] = flattenWorkspaceFiles(agentFiles);
+    }
 
     let html = '<div class="workspace-browser">';
 
-    for (const [agentId, files] of Object.entries(workspaceFiles).sort()) {
-        const fileCount = Object.keys(files).length;
-        const fileList = Object.entries(files).sort();
+    for (const [agentId, agentFiles] of Object.entries(workspaceFiles).sort()) {
+        // Flatten the timestamp-keyed structure to a simple file map
+        const flatFiles = flattenWorkspaceFiles(agentFiles);
+        const fileCount = Object.keys(flatFiles).length;
+
+        // Build directory tree from flat files
+        const tree = buildDirectoryTree(flatFiles);
 
         html += `
             <div class="collapsible workspace-agent">
@@ -2302,44 +2525,8 @@ function renderWorkspace(data) {
                     <span class="collapsible-icon">&#x25BC;</span>
                 </div>
                 <div class="collapsible-content">
-                    <div class="workspace-file-list">
-        `;
-
-        for (const [filePath, content] of fileList) {
-            const fileExt = filePath.split('.').pop().toLowerCase();
-            const isCode = ['py', 'js', 'ts', 'json', 'yaml', 'yml', 'sh', 'html', 'css', 'md', 'txt'].includes(fileExt);
-            const langClass = isCode ? `language-${fileExt}` : '';
-            const fileId = `${agentId}__${filePath}`.replace(/[^a-zA-Z0-9]/g, '_');
-            const sizeStr = content.length > 1024
-                ? `${(content.length / 1024).toFixed(1)} KB`
-                : `${content.length} B`;
-
-            html += `
-                <div class="workspace-file" id="file-${fileId}">
-                    <div class="workspace-file-header" onclick="toggleWorkspaceFile('${fileId}')">
-                        <span class="workspace-file-icon">${getFileIcon(fileExt)}</span>
-                        <span class="workspace-file-path">${escapeHtml(filePath)}</span>
-                        <span class="workspace-file-size">${sizeStr}</span>
-                        <span class="workspace-file-toggle">▶</span>
-                    </div>
-                    <div class="workspace-file-content">
-                        <div class="workspace-file-actions">
-                            <button class="ws-action-btn" onclick="copyWorkspaceFile('${escapeHtml(agentId)}', '${escapeHtml(filePath)}')">
-                                📋 Copy
-                            </button>
-                            <button class="ws-action-btn" onclick="downloadWorkspaceFile('${escapeHtml(agentId)}', '${escapeHtml(filePath)}')">
-                                ⬇️ Download
-                            </button>
-                        </div>
-                        <div class="workspace-file-code">
-                            <pre class="${langClass}">${escapeHtml(content)}</pre>
-                        </div>
-                    </div>
-                </div>
-            `;
-        }
-
-        html += `
+                    <div class="workspace-tree">
+                        ${renderTreeNode(tree, agentId)}
                     </div>
                 </div>
             </div>
@@ -2521,6 +2708,233 @@ window.copyFinalAnswer = function() {
             btn.classList.remove('copied');
         }, 2000);
     });
+};
+
+// =============================================================================
+// Artifact Preview Functions (using React bundle from webui)
+// =============================================================================
+
+// Track the current artifact unmount function for cleanup
+let currentArtifactUnmount = null;
+
+/**
+ * Open artifact preview modal using React renderers from webui bundle
+ * @param {string} content - The file content (text or base64)
+ * @param {string} fileName - The file name for type detection
+ * @param {Object} relatedFiles - Optional related files for HTML (CSS, JS, etc.)
+ */
+window.openArtifactPreview = function(content, fileName, relatedFiles = {}) {
+    const modal = document.getElementById('artifact-preview-modal');
+    const container = document.getElementById('artifact-preview-container');
+    const titleEl = document.getElementById('artifact-preview-title');
+
+    if (!window.MassGenRenderers) {
+        console.error('MassGen Renderers bundle not loaded');
+        container.innerHTML = '<div class="error">Artifact preview not available - renderer bundle not loaded</div>';
+        modal.classList.add('active');
+        return;
+    }
+
+    const {
+        detectArtifactType,
+        HtmlPreview,
+        ImagePreview,
+        MarkdownPreview,
+        SvgPreview,
+        PdfPreview,
+        MermaidPreview,
+        VideoPreview,
+        DocxPreview,
+        XlsxPreview,
+        PptxPreview,
+        SandpackPreview,
+        render,
+        React
+    } = window.MassGenRenderers;
+
+    // Update title with file name
+    titleEl.textContent = fileName || 'Artifact Preview';
+
+    // Detect artifact type
+    const artifactType = detectArtifactType(fileName, undefined, content);
+
+    let component;
+    switch (artifactType) {
+        case 'html':
+            component = React.createElement(HtmlPreview, { content, fileName, relatedFiles });
+            break;
+        case 'image':
+            component = React.createElement(ImagePreview, { content, fileName });
+            break;
+        case 'markdown':
+            component = React.createElement(MarkdownPreview, { content, fileName });
+            break;
+        case 'svg':
+            component = React.createElement(SvgPreview, { content, fileName });
+            break;
+        case 'pdf':
+            component = React.createElement(PdfPreview, { content, fileName });
+            break;
+        case 'mermaid':
+            component = React.createElement(MermaidPreview, { content, fileName });
+            break;
+        case 'video':
+            component = React.createElement(VideoPreview, { content, fileName });
+            break;
+        case 'docx':
+            component = React.createElement(DocxPreview, { content, fileName });
+            break;
+        case 'xlsx':
+            component = React.createElement(XlsxPreview, { content, fileName });
+            break;
+        case 'pptx':
+            component = React.createElement(PptxPreview, { content, fileName });
+            break;
+        case 'react':
+            component = React.createElement(SandpackPreview, { content, fileName });
+            break;
+        default:
+            // Fallback to raw content display for unsupported types
+            container.innerHTML = `<pre class="raw-content">${escapeHtml(content)}</pre>`;
+            modal.classList.add('active');
+            return;
+    }
+
+    // Render React component
+    currentArtifactUnmount = render(container, component);
+    modal.classList.add('active');
+};
+
+/**
+ * Close artifact preview modal and cleanup React component
+ */
+window.closeArtifactPreview = function() {
+    const modal = document.getElementById('artifact-preview-modal');
+    const container = document.getElementById('artifact-preview-container');
+
+    modal.classList.remove('active');
+
+    // Cleanup React component
+    if (currentArtifactUnmount) {
+        currentArtifactUnmount();
+        currentArtifactUnmount = null;
+    }
+
+    // Clear container
+    container.innerHTML = '';
+};
+
+/**
+ * Check if a file can be previewed using React renderers
+ * @param {string} fileName - The file name
+ * @param {string} content - Optional content for content-based detection
+ * @returns {boolean}
+ */
+window.canPreviewArtifact = function(fileName, content) {
+    if (!window.MassGenRenderers || typeof window.MassGenRenderers.canPreviewFile !== 'function') {
+        return false;
+    }
+    return window.MassGenRenderers.canPreviewFile(fileName, undefined, content);
+};
+
+/**
+ * Find PDF content for an Office document in workspace files
+ * Looks for a corresponding .pdf file (e.g., report.docx -> report.docx.pdf)
+ * @param {string} agentId - The agent ID
+ * @param {string} filePath - The original file path
+ * @returns {Object|null} {content, pdfPath} if found, null otherwise
+ */
+function findPdfVersionForOfficeDoc(agentId, filePath) {
+    if (!sessionData || !sessionData.workspaceFiles) return null;
+
+    const pdfPath = getPdfVersionPath(filePath);
+    const agentFiles = sessionData.workspaceFiles[agentId];
+
+    if (agentFiles && agentFiles[pdfPath]) {
+        return { content: agentFiles[pdfPath], pdfPath };
+    }
+
+    return null;
+}
+
+/**
+ * Smart preview: For Office documents, prefer the PDF version if available
+ * @param {string} content - The file content
+ * @param {string} fileName - The file name
+ * @param {string} agentId - Optional agent ID for looking up PDF versions
+ * @param {string} filePath - Optional file path for looking up PDF versions
+ */
+window.openSmartArtifactPreview = function(content, fileName, agentId, filePath) {
+    // For Office documents, check if we have a pre-converted PDF version
+    if (isOfficeDocument(fileName) && agentId && filePath) {
+        const pdfVersion = findPdfVersionForOfficeDoc(agentId, filePath);
+        if (pdfVersion) {
+            // Use the PDF version for preview (better quality)
+            openArtifactPreview(pdfVersion.content, fileName + '.pdf');
+            return;
+        }
+    }
+
+    // Fall back to regular preview
+    openArtifactPreview(content, fileName);
+};
+
+/**
+ * Open artifact preview from a button element (reads content from sibling pre element)
+ * For Office documents, uses the PDF version if available for better quality
+ * @param {HTMLElement} buttonEl - The preview button element
+ */
+window.openArtifactPreviewFromElement = function(buttonEl) {
+    const fileName = buttonEl.dataset.filename;
+    const fileId = buttonEl.dataset.fileid;
+    const hasPdf = buttonEl.dataset.hasPdf === 'true';
+    const pdfPath = buttonEl.dataset.pdfPath;
+
+    // Find the file container and get content from the pre element
+    const fileContainer = document.getElementById('file-' + fileId);
+    if (!fileContainer) {
+        console.error('Could not find file container:', fileId);
+        return;
+    }
+
+    // For Office documents with PDF version, find and use the PDF content
+    if (hasPdf && pdfPath) {
+        // The PDF file should be in the same parent container (inline-workspace-files)
+        const pdfFileId = fileId.replace(fileName.replace(/[^a-zA-Z0-9]/g, '_'), pdfPath.replace(/[^a-zA-Z0-9]/g, '_'));
+        const pdfContainer = document.getElementById('file-' + pdfFileId);
+        if (pdfContainer) {
+            const pdfPreElement = pdfContainer.querySelector('.workspace-file-code pre');
+            if (pdfPreElement) {
+                openArtifactPreview(pdfPreElement.textContent, pdfPath);
+                return;
+            }
+        }
+        // If we can't find the PDF container, try looking in the same parent
+        const parent = fileContainer.closest('.inline-workspace-files');
+        if (parent) {
+            const allFiles = parent.querySelectorAll('.workspace-file');
+            for (const file of allFiles) {
+                const header = file.querySelector('.workspace-file-path');
+                if (header && header.textContent.includes(pdfPath)) {
+                    const pdfPre = file.querySelector('.workspace-file-code pre');
+                    if (pdfPre) {
+                        openArtifactPreview(pdfPre.textContent, pdfPath);
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    // Fall back to original content
+    const preElement = fileContainer.querySelector('.workspace-file-code pre');
+    if (!preElement) {
+        console.error('Could not find pre element in file container');
+        return;
+    }
+
+    const content = preElement.textContent;
+    openArtifactPreview(content, fileName);
 };
 
 /**

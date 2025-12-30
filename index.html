@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MassGen Session Viewer</title>
     <link rel="stylesheet" href="style.css">
+    <!-- React peer dependencies for artifact renderers -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 </head>
 <body>
     <div class="container">
@@ -167,6 +170,17 @@
         </div>
     </div>
 
+    <!-- Artifact Preview Modal -->
+    <div id="artifact-preview-modal" class="artifact-modal">
+        <div class="artifact-modal-header">
+            <span id="artifact-preview-title">Artifact Preview</span>
+            <button onclick="closeArtifactPreview()" class="artifact-modal-close">&times;</button>
+        </div>
+        <div id="artifact-preview-container" class="artifact-modal-content"></div>
+    </div>
+
+    <!-- MassGen Artifact Renderers (built from webui) -->
+    <script src="lib/massgen-renderers.umd.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

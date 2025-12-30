@@ -1512,6 +1512,139 @@ body {
     word-break: break-word;
 }
 
+/* Workspace Tree Structure */
+.workspace-tree {
+    max-height: 500px;
+    overflow-y: auto;
+}
+
+.tree-folder {
+    border-bottom: 1px solid var(--border-color);
+}
+
+.tree-folder:last-child {
+    border-bottom: none;
+}
+
+.tree-folder-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    cursor: pointer;
+    background: var(--bg-tertiary);
+    transition: background 0.15s;
+}
+
+.tree-folder-header:hover {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.tree-folder-icon {
+    font-size: 0.9rem;
+    flex-shrink: 0;
+}
+
+.tree-folder-name {
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 0.85rem;
+    color: var(--accent-cyan);
+    flex-grow: 1;
+}
+
+.tree-folder-count {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    margin-right: 0.5rem;
+}
+
+.tree-folder-toggle {
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    transition: transform 0.2s;
+    flex-shrink: 0;
+}
+
+.tree-folder.expanded .tree-folder-toggle {
+    transform: rotate(90deg);
+}
+
+.tree-folder-content {
+    display: none;
+    border-top: 1px solid var(--border-color);
+    background: var(--bg-primary);
+}
+
+.tree-folder.expanded .tree-folder-content {
+    display: block;
+}
+
+/* Tree Files */
+.tree-file {
+    border-bottom: 1px solid var(--border-color);
+}
+
+.tree-file:last-child {
+    border-bottom: none;
+}
+
+.tree-file-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0.75rem;
+    cursor: pointer;
+    background: var(--bg-secondary);
+    transition: background 0.15s;
+}
+
+.tree-file-header:hover {
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.tree-file-icon {
+    font-size: 0.85rem;
+    flex-shrink: 0;
+}
+
+.tree-file-name {
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 0.8rem;
+    color: var(--text-primary);
+    flex-grow: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tree-file-size {
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    flex-shrink: 0;
+    margin-right: 0.5rem;
+}
+
+.tree-file-toggle {
+    color: var(--text-muted);
+    font-size: 0.65rem;
+    transition: transform 0.2s;
+    flex-shrink: 0;
+}
+
+.tree-file.expanded .tree-file-toggle {
+    transform: rotate(90deg);
+}
+
+.tree-file-content {
+    display: none;
+    border-top: 1px solid var(--border-color);
+    background: var(--bg-primary);
+}
+
+.tree-file.expanded .tree-file-content {
+    display: block;
+}
+
 /* Footer */
 .export-footer {
     text-align: center;
@@ -1820,6 +1953,140 @@ body {
     margin-top: 0.5rem;
 }
 
+/* =============================================================================
+   Artifact Preview Modal (using React bundle)
+   ============================================================================= */
+
+.artifact-modal {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.85);
+    z-index: 1000;
+    flex-direction: column;
+}
+
+.artifact-modal.active {
+    display: flex;
+}
+
+.artifact-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 1.5rem;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-color);
+    flex-shrink: 0;
+}
+
+.artifact-modal-header span {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-family: ui-monospace, 'SF Mono', 'Monaco', monospace;
+}
+
+.artifact-modal-close {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 1.75rem;
+    cursor: pointer;
+    padding: 0.25rem 0.5rem;
+    line-height: 1;
+    transition: color 0.2s, transform 0.2s;
+}
+
+.artifact-modal-close:hover {
+    color: var(--accent-red);
+    transform: scale(1.1);
+}
+
+.artifact-modal-content {
+    flex: 1;
+    overflow: auto;
+    padding: 1rem;
+    background: var(--bg-primary);
+    display: flex;
+    flex-direction: column;
+}
+
+/* Make the React renderer container fill the space */
+.artifact-modal-content > div {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+/* Make iframes inside the preview fill available space */
+.artifact-modal-content iframe {
+    flex: 1;
+    width: 100% !important;
+    height: 100% !important;
+    min-height: 70vh;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: white;
+}
+
+/* Raw content fallback for unsupported types */
+.artifact-modal-content .raw-content {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 1rem;
+    font-family: ui-monospace, 'SF Mono', 'Monaco', monospace;
+    font-size: 0.875rem;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 100%;
+    overflow: auto;
+}
+
+/* Error message styling */
+.artifact-modal-content .error {
+    color: var(--accent-red);
+    padding: 2rem;
+    text-align: center;
+    font-size: 1rem;
+}
+
+/* Preview button in workspace tree */
+.tree-file-preview {
+    background: var(--accent-cyan);
+    color: var(--bg-primary);
+    border: none;
+    border-radius: 4px;
+    padding: 0.25rem 0.5rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.2s;
+    margin-left: 0.5rem;
+}
+
+.tree-file-preview:hover {
+    opacity: 0.8;
+}
+
+/* Preview badge for previewable files */
+.preview-badge {
+    background: var(--accent-purple);
+    color: white;
+    font-size: 0.6rem;
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+    margin-left: 0.5rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
     body { padding: 1rem; }
@@ -1832,5 +2099,10 @@ body {
         width: 95vw;
         right: 2.5vw;
         top: 60px;
+    }
+
+    /* Artifact modal responsive */
+    .artifact-modal-content {
+        padding: 1rem;
     }
 }
