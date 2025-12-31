@@ -1156,11 +1156,23 @@ body {
     background: var(--bg-tertiary);
     border-radius: 8px;
     padding: 1.25rem;
-    white-space: pre-wrap;
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
     font-size: 0.85rem;
+    max-height: none;
+    overflow-y: visible;
+}
+
+.final-answer-text {
+    white-space: pre-wrap;
     max-height: 500px;
     overflow-y: auto;
+    margin-bottom: 1rem;
+}
+
+.final-answer-content .inline-workspace {
+    margin-top: 1.5rem;
+    border-top: 1px solid var(--border-color);
+    padding-top: 1rem;
 }
 
 /* Collapsible */
@@ -1510,6 +1522,23 @@ body {
     background: transparent;
     white-space: pre-wrap;
     word-break: break-word;
+}
+
+.workspace-file-preview {
+    padding: 0.75rem;
+    background: var(--bg-tertiary);
+    border-radius: 4px;
+}
+
+.workspace-file-binary-notice {
+    padding: 1rem;
+    text-align: center;
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+.workspace-file-binary-notice p {
+    margin: 0;
 }
 
 /* Workspace Tree Structure */

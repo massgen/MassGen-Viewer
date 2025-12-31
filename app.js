@@ -643,15 +643,29 @@ function extractSessionData(files) {
     // Paths like: turn_1/attempt_1/agent_a/timestamp/workspace/file.txt
     //         or: turn_1/attempt_1/final/agent_a/workspace/file.txt
     //         or: agent_a/timestamp/workspace/file.txt
+    // Also handle flattened gist paths with __ separator:
+    //         turn_1__attempt_1__final__agent_a__workspace__file.txt
     // Key by agentId/timestamp so we can associate with specific answers
     const workspaceFiles = {};  // { agentId: { timestamp: { filePath: content } } }
     // Also track per-turn workspace files: { turnNumber: { agentId: { timestamp: { filePath: content } } } }
     const turnWorkspaceFiles = {};
     for (const [path, content] of Object.entries(files)) {
-        if (path.includes('/workspace/') && typeof content === 'string') {
-            // Extract everything after 'workspace/'
-            const wsIdx = path.indexOf('/workspace/');
-            const relativePath = path.substring(wsIdx + 11); // Skip '/workspace/'
+        // Check for workspace in both nested (/workspace/) and flattened (__workspace__) formats
+        const hasNestedWorkspace = path.includes('/workspace/');
+        const hasFlattenedWorkspace = path.includes('__workspace__');
+
+        if ((hasNestedWorkspace || hasFlattenedWorkspace) && typeof content === 'string') {
+            let relativePath;
+
+            if (hasNestedWorkspace) {
+                // Extract everything after 'workspace/'
+                const wsIdx = path.indexOf('/workspace/');
+                relativePath = path.substring(wsIdx + 11); // Skip '/workspace/'
+            } else {
+                // Handle flattened format: extract everything after '__workspace__'
+                const wsIdx = path.indexOf('__workspace__');
+                relativePath = path.substring(wsIdx + 13).replace(/__/g, '/'); // Skip '__workspace__' and convert __ to /
+            }
 
             // Extract agent ID, timestamp, and turn from path
             const { agentId, timestamp } = extractAgentFromPath(path);
@@ -662,7 +676,9 @@ function extractSessionData(files) {
                     workspaceFiles[agentId] = {};
                 }
                 // Use timestamp if available, otherwise 'final' or 'default'
-                const tsKey = timestamp || (path.includes('/final/') ? 'final' : 'default');
+                // Check for 'final' in both formats
+                const isFinal = path.includes('/final/') || path.includes('__final__');
+                const tsKey = timestamp || (isFinal ? 'final' : 'default');
                 if (!workspaceFiles[agentId][tsKey]) {
                     workspaceFiles[agentId][tsKey] = {};
                 }
@@ -1820,12 +1836,19 @@ function renderInlineWorkspace(agentId, timestamp, workspaceFiles) {
     for (const [filePath, content] of fileEntries) {
         const fileExt = filePath.split('.').pop().toLowerCase();
         const fileId = `${agentId}__${timestamp}__${filePath}`.replace(/[^a-zA-Z0-9]/g, '_');
-        const sizeStr = content.length > 1024
-            ? `${(content.length / 1024).toFixed(1)} KB`
-            : `${content.length} B`;
+
+        // Check if this is a binary/base64 file
+        const isBinaryFile = ['pdf', 'pptx', 'docx', 'xlsx', 'png', 'jpg', 'jpeg', 'gif', 'webp'].includes(fileExt);
+        // For binary files, calculate size from base64 (base64 is ~4/3 of original size)
+        const estimatedSize = isBinaryFile ? Math.floor(content.length * 0.75) : content.length;
+        const sizeStr = estimatedSize > 1024
+            ? `${(estimatedSize / 1024).toFixed(1)} KB`
+            : `${estimatedSize} B`;
 
         // Check if file can be previewed
         const isPreviewable = window.canPreviewArtifact ? window.canPreviewArtifact(filePath, content) : false;
+        const isPdf = fileExt === 'pdf';
+        const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(fileExt);
         const previewBadge = isPreviewable ? '<span class="preview-badge">Preview</span>' : '';
         // Check if this is an Office document with a PDF version available
         const pdfPath = filePath + '.pdf';
@@ -1834,6 +1857,41 @@ function renderInlineWorkspace(agentId, timestamp, workspaceFiles) {
         const previewButton = isPreviewable
             ? `<button class="ws-action-btn preview-btn" onclick="event.stopPropagation(); openArtifactPreviewFromElement(this)" data-filename="${escapeHtml(filePath)}" data-fileid="${fileId}" data-has-pdf="${hasPdfVersion}" data-pdf-path="${hasPdfVersion ? escapeHtml(pdfPath) : ''}">👁️ Preview</button>`
             : '';
+
+        // For binary files, show inline preview instead of raw base64
+        let contentHtml;
+        if (isPdf) {
+            // Embed PDF directly
+            contentHtml = `
+                <div class="workspace-file-preview">
+                    <iframe src="data:application/pdf;base64,${content}" style="width:100%; height:500px; border:none; border-radius:4px;"></iframe>
+                </div>
+            `;
+        } else if (isImage) {
+            // Embed image directly
+            const mimeType = fileExt === 'png' ? 'image/png' :
+                           fileExt === 'gif' ? 'image/gif' :
+                           fileExt === 'webp' ? 'image/webp' : 'image/jpeg';
+            contentHtml = `
+                <div class="workspace-file-preview">
+                    <img src="data:${mimeType};base64,${content}" style="max-width:100%; max-height:500px; border-radius:4px;" />
+                </div>
+            `;
+        } else if (isBinaryFile) {
+            // For other binary files (pptx, docx, xlsx), just show download prompt
+            contentHtml = `
+                <div class="workspace-file-binary-notice">
+                    <p>📄 Binary file - use Download to save, or Preview to view${hasPdfVersion ? ' (PDF available)' : ''}</p>
+                </div>
+            `;
+        } else {
+            // Text files - show content
+            contentHtml = `
+                <div class="workspace-file-code">
+                    <pre>${escapeHtml(content)}</pre>
+                </div>
+            `;
+        }
 
         html += `
             <div class="workspace-file" id="file-${fileId}">
@@ -1846,16 +1904,12 @@ function renderInlineWorkspace(agentId, timestamp, workspaceFiles) {
                 <div class="workspace-file-content">
                     <div class="workspace-file-actions">
                         ${previewButton}
-                        <button class="ws-action-btn" onclick="copyWorkspaceFileInline('${fileId}')">
-                            📋 Copy
-                        </button>
+                        ${!isBinaryFile ? `<button class="ws-action-btn" onclick="copyWorkspaceFileInline('${fileId}')">📋 Copy</button>` : ''}
                         <button class="ws-action-btn" onclick="downloadWorkspaceFileInline('${fileId}', '${escapeHtml(filePath)}')">
                             ⬇️ Download
                         </button>
                     </div>
-                    <div class="workspace-file-code">
-                        <pre>${escapeHtml(content)}</pre>
-                    </div>
+                    ${contentHtml}
                 </div>
             </div>
         `;
@@ -2006,7 +2060,24 @@ function renderAnswers(data) {
             const shortLabel = `${agentNum}.${answerNum}`;
 
             // Get workspace files for this specific answer (by timestamp)
-            const answerTimestamp = answer.timestamp || label.split('/').pop()?.split('__')[0];
+            // For final answers (which have __final__ instead of a timestamp), use 'final' as the key
+            const isFinalAnswer = label.includes('/final/') || label.includes('__final__');
+            let answerTimestamp = answer.timestamp;
+            if (!answerTimestamp) {
+                if (isFinalAnswer) {
+                    answerTimestamp = 'final';
+                } else {
+                    // Try to extract timestamp from label
+                    // Label might be like: turn_1__attempt_1__agent_a__20251231_065145__answer.txt
+                    const parts = label.split('__');
+                    for (const part of parts) {
+                        if (part.match(/^\d{8}_\d+/)) {
+                            answerTimestamp = part;
+                            break;
+                        }
+                    }
+                }
+            }
             const answerWorkspace = agentWorkspaceByTimestamp[answerTimestamp] || {};
             const wsFileCount = Object.keys(answerWorkspace).length;
 
@@ -2168,19 +2239,25 @@ function extractShortLabel(fullLabel) {
 }
 
 /**
- * Render final answer
+ * Render final answer with workspace files
  */
 function renderFinalAnswer(data) {
     const container = document.getElementById('final-answer');
 
-    // Use turn-filtered files
+    // Use turn-filtered files and data
     const filteredFiles = filterFilesByTurn(data.files);
+    const filteredData = getDataForCurrentTurn(data);
+    const workspaceFiles = filteredData.workspaceFiles || {};
 
     // Try to find final answer in files
     let finalAnswer = '';
+    let finalAgentId = null;
     for (const [path, content] of Object.entries(filteredFiles)) {
         if ((path.includes('final/') || path.includes('__final__')) && (path.endsWith('/answer.txt') || path.endsWith('__answer.txt'))) {
             finalAnswer = content;
+            // Extract agent ID from path
+            const { agentId } = extractAgentFromPath(path);
+            finalAgentId = agentId;
             break;
         }
     }
@@ -2190,7 +2267,34 @@ function renderFinalAnswer(data) {
         finalAnswer = data.files['coordination_table.txt'] || '';
     }
 
-    container.textContent = finalAnswer || 'No final answer available';
+    // Build HTML with answer text
+    let html = `<div class="final-answer-text">${escapeHtml(finalAnswer || 'No final answer available')}</div>`;
+
+    // Add workspace files for the final answer if available
+    if (finalAgentId && workspaceFiles[finalAgentId]) {
+        const agentWorkspace = workspaceFiles[finalAgentId];
+        // Try 'final' key first, then fall back to the latest timestamp
+        let finalWorkspace = agentWorkspace['final'] || {};
+        let workspaceKey = 'final';
+
+        // If no 'final' key, get the latest timestamp's workspace
+        if (Object.keys(finalWorkspace).length === 0) {
+            const timestamps = Object.keys(agentWorkspace).filter(k => k !== 'default' && k !== 'final');
+            if (timestamps.length > 0) {
+                // Sort timestamps descending to get the latest
+                timestamps.sort((a, b) => b.localeCompare(a));
+                workspaceKey = timestamps[0];
+                finalWorkspace = agentWorkspace[workspaceKey] || {};
+            }
+        }
+
+        const fileCount = Object.keys(finalWorkspace).length;
+        if (fileCount > 0) {
+            html += renderInlineWorkspace(finalAgentId, workspaceKey, finalWorkspace);
+        }
+    }
+
+    container.innerHTML = html;
 }
 
 /**
