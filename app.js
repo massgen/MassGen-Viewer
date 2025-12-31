@@ -42,6 +42,29 @@ function getPdfVersionPath(filePath) {
     return filePath + '.pdf';
 }
 
+/**
+ * Convert base64 string to Blob URL
+ * This bypasses Chrome's data URI size limit (~2MB) for iframes
+ * @param {string} base64 - The base64 encoded content
+ * @param {string} mimeType - The MIME type (e.g., 'application/pdf')
+ * @returns {string} A blob URL that can be used in iframe src
+ */
+function base64ToBlobUrl(base64, mimeType) {
+    try {
+        const byteCharacters = atob(base64);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+            byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        const blob = new Blob([byteArray], { type: mimeType });
+        return URL.createObjectURL(blob);
+    } catch (e) {
+        console.error('Failed to create blob URL:', e);
+        return null;
+    }
+}
+
 // =============================================================================
 // Session Manifest Functions (Multi-Turn Support)
 // =============================================================================
@@ -1944,11 +1967,26 @@ function selectWorkspaceFile(workspaceId, fileId) {
 
     let contentHtml;
     if (isPdf) {
-        contentHtml = `
-            <div class="ws-preview-content pdf">
-                <iframe src="data:application/pdf;base64,${content}" style="width:100%; height:100%; border:none;"></iframe>
-            </div>
-        `;
+        // Use Blob URL to bypass Chrome's ~2MB data URI limit for iframes
+        const blobUrl = base64ToBlobUrl(content, 'application/pdf');
+        if (blobUrl) {
+            contentHtml = `
+                <div class="ws-preview-content pdf">
+                    <iframe src="${blobUrl}" style="width:100%; height:100%; border:none;"></iframe>
+                </div>
+            `;
+        } else {
+            // Fallback if blob creation fails
+            contentHtml = `
+                <div class="ws-preview-content binary">
+                    <div class="ws-binary-notice">
+                        <span class="ws-binary-icon">📄</span>
+                        <p>PDF file</p>
+                        <p class="ws-binary-hint">Use Download to view</p>
+                    </div>
+                </div>
+            `;
+        }
     } else if (isImage) {
         const mimeType = ext === 'png' ? 'image/png' :
                        ext === 'gif' ? 'image/gif' :
@@ -2920,15 +2958,69 @@ window.copyWorkspaceFileInline = function(fileId) {
 };
 
 /**
- * Download inline workspace file (extracts content from the pre element)
+ * Download inline workspace file from split-pane workspace
+ * Finds the file data from the embedded JSON script element
  */
 window.downloadWorkspaceFileInline = function(fileId, filePath) {
-    const fileEl = document.getElementById(`file-${fileId}`);
-    const pre = fileEl?.querySelector('.workspace-file-code pre');
-    if (!pre) return;
+    // Find the workspace data script that contains this file
+    // fileId format: agentId__timestamp__path (with special chars replaced by _)
+    const scripts = document.querySelectorAll('script[type="application/json"][id^="ws-data-"]');
+    let fileData = null;
+
+    for (const script of scripts) {
+        try {
+            const data = JSON.parse(script.textContent);
+            if (data[fileId]) {
+                fileData = data[fileId];
+                break;
+            }
+        } catch (e) {
+            continue;
+        }
+    }
+
+    if (!fileData || !fileData.content) {
+        console.error('Could not find file data for:', fileId);
+        return;
+    }
 
     const filename = filePath.split('/').pop();
-    const blob = new Blob([pre.textContent], { type: 'text/plain' });
+    const { content, isBinary, ext } = fileData;
+
+    let blob;
+    if (isBinary) {
+        // Decode base64 for binary files
+        try {
+            const byteCharacters = atob(content);
+            const byteNumbers = new Array(byteCharacters.length);
+            for (let i = 0; i < byteCharacters.length; i++) {
+                byteNumbers[i] = byteCharacters.charCodeAt(i);
+            }
+            const byteArray = new Uint8Array(byteNumbers);
+
+            // Determine MIME type
+            const mimeTypes = {
+                'pdf': 'application/pdf',
+                'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+                'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'png': 'image/png',
+                'jpg': 'image/jpeg',
+                'jpeg': 'image/jpeg',
+                'gif': 'image/gif',
+                'webp': 'image/webp'
+            };
+            const mimeType = mimeTypes[ext] || 'application/octet-stream';
+            blob = new Blob([byteArray], { type: mimeType });
+        } catch (e) {
+            console.error('Failed to decode binary file:', e);
+            return;
+        }
+    } else {
+        // Text file
+        blob = new Blob([content], { type: 'text/plain' });
+    }
+
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
