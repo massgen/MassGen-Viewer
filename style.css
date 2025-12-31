@@ -1541,6 +1541,178 @@ body {
     margin: 0;
 }
 
+/* Split-pane workspace layout */
+.inline-workspace.split-pane {
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.ws-split-container {
+    display: flex;
+    height: 350px;
+    background: var(--bg-secondary);
+}
+
+.ws-file-tree {
+    width: 240px;
+    min-width: 200px;
+    max-width: 320px;
+    border-right: 1px solid var(--border-color);
+    overflow-y: auto;
+    background: var(--bg-tertiary);
+    flex-shrink: 0;
+}
+
+.ws-tree-file {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    cursor: pointer;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    transition: background 0.15s;
+}
+
+.ws-tree-file:hover {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.ws-tree-file.selected {
+    background: var(--accent-primary);
+    color: white;
+}
+
+.ws-tree-file.selected .ws-tree-size {
+    color: rgba(255, 255, 255, 0.7);
+}
+
+.ws-tree-icon {
+    font-size: 0.9rem;
+    flex-shrink: 0;
+}
+
+.ws-tree-name {
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 0.8rem;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ws-tree-size {
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    flex-shrink: 0;
+    margin-left: 0.25rem;
+    opacity: 0.8;
+}
+
+.ws-preview-pane {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--bg-secondary);
+}
+
+.ws-preview-placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+.ws-preview-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.5rem 0.75rem;
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border-color);
+    gap: 0.5rem;
+}
+
+.ws-preview-filename {
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ws-preview-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-shrink: 0;
+}
+
+.ws-preview-content {
+    flex: 1;
+    overflow: auto;
+}
+
+.ws-preview-content.pdf iframe,
+.ws-preview-content.image {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+}
+
+.ws-preview-content.image img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+}
+
+.ws-preview-content.code {
+    padding: 0;
+}
+
+.ws-preview-content.code pre {
+    margin: 0;
+    padding: 0.75rem;
+    font-size: 0.8rem;
+    background: transparent;
+    white-space: pre-wrap;
+    word-break: break-word;
+    height: 100%;
+    overflow: auto;
+}
+
+.ws-preview-content.binary {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+}
+
+.ws-binary-notice {
+    text-align: center;
+    color: var(--text-muted);
+}
+
+.ws-binary-icon {
+    font-size: 3rem;
+    display: block;
+    margin-bottom: 0.5rem;
+}
+
+.ws-binary-notice p {
+    margin: 0.25rem 0;
+}
+
+.ws-binary-hint {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
 /* Workspace Tree Structure */
 .workspace-tree {
     max-height: 500px;

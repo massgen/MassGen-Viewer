@@ -1818,21 +1818,16 @@ window.navigateToFinalAnswer = function() {
 };
 
 /**
- * Render inline workspace files within an answer
+ * Render inline workspace files within an answer - split pane layout
  */
 function renderInlineWorkspace(agentId, timestamp, workspaceFiles) {
     const fileEntries = Object.entries(workspaceFiles).sort();
     if (fileEntries.length === 0) return '';
 
-    let html = `
-        <div class="inline-workspace">
-            <div class="inline-workspace-header">
-                <span class="inline-ws-icon">📁</span>
-                <span class="inline-ws-title">Workspace Files (${fileEntries.length})</span>
-            </div>
-            <div class="inline-workspace-files">
-    `;
+    const workspaceId = `ws_${agentId}_${timestamp}`.replace(/[^a-zA-Z0-9]/g, '_');
 
+    // Build file tree (left pane)
+    let fileTreeHtml = '';
     for (const [filePath, content] of fileEntries) {
         const fileExt = filePath.split('.').pop().toLowerCase();
         const fileId = `${agentId}__${timestamp}__${filePath}`.replace(/[^a-zA-Z0-9]/g, '_');
@@ -1845,82 +1840,154 @@ function renderInlineWorkspace(agentId, timestamp, workspaceFiles) {
             ? `${(estimatedSize / 1024).toFixed(1)} KB`
             : `${estimatedSize} B`;
 
-        // Check if file can be previewed
         const isPreviewable = window.canPreviewArtifact ? window.canPreviewArtifact(filePath, content) : false;
-        const isPdf = fileExt === 'pdf';
-        const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(fileExt);
-        const previewBadge = isPreviewable ? '<span class="preview-badge">Preview</span>' : '';
-        // Check if this is an Office document with a PDF version available
-        const pdfPath = filePath + '.pdf';
-        const hasPdfVersion = isOfficeDocument(filePath) && workspaceFiles[pdfPath];
-        // Store data attributes for preview button
-        const previewButton = isPreviewable
-            ? `<button class="ws-action-btn preview-btn" onclick="event.stopPropagation(); openArtifactPreviewFromElement(this)" data-filename="${escapeHtml(filePath)}" data-fileid="${fileId}" data-has-pdf="${hasPdfVersion}" data-pdf-path="${hasPdfVersion ? escapeHtml(pdfPath) : ''}">👁️ Preview</button>`
-            : '';
 
-        // For binary files, show inline preview instead of raw base64
-        let contentHtml;
-        if (isPdf) {
-            // Embed PDF directly
-            contentHtml = `
-                <div class="workspace-file-preview">
-                    <iframe src="data:application/pdf;base64,${content}" style="width:100%; height:500px; border:none; border-radius:4px;"></iframe>
-                </div>
-            `;
-        } else if (isImage) {
-            // Embed image directly
-            const mimeType = fileExt === 'png' ? 'image/png' :
-                           fileExt === 'gif' ? 'image/gif' :
-                           fileExt === 'webp' ? 'image/webp' : 'image/jpeg';
-            contentHtml = `
-                <div class="workspace-file-preview">
-                    <img src="data:${mimeType};base64,${content}" style="max-width:100%; max-height:500px; border-radius:4px;" />
-                </div>
-            `;
-        } else if (isBinaryFile) {
-            // For other binary files (pptx, docx, xlsx), just show download prompt
-            contentHtml = `
-                <div class="workspace-file-binary-notice">
-                    <p>📄 Binary file - use Download to save, or Preview to view${hasPdfVersion ? ' (PDF available)' : ''}</p>
-                </div>
-            `;
-        } else {
-            // Text files - show content
-            contentHtml = `
-                <div class="workspace-file-code">
-                    <pre>${escapeHtml(content)}</pre>
-                </div>
-            `;
-        }
-
-        html += `
-            <div class="workspace-file" id="file-${fileId}">
-                <div class="workspace-file-header" onclick="toggleWorkspaceFile('${fileId}')">
-                    <span class="workspace-file-icon">${getFileIcon(fileExt)}</span>
-                    <span class="workspace-file-path">${escapeHtml(filePath)}${previewBadge}</span>
-                    <span class="workspace-file-size">${sizeStr}</span>
-                    <span class="workspace-file-toggle">▶</span>
-                </div>
-                <div class="workspace-file-content">
-                    <div class="workspace-file-actions">
-                        ${previewButton}
-                        ${!isBinaryFile ? `<button class="ws-action-btn" onclick="copyWorkspaceFileInline('${fileId}')">📋 Copy</button>` : ''}
-                        <button class="ws-action-btn" onclick="downloadWorkspaceFileInline('${fileId}', '${escapeHtml(filePath)}')">
-                            ⬇️ Download
-                        </button>
-                    </div>
-                    ${contentHtml}
-                </div>
+        const fileName = filePath.split('/').pop();
+        fileTreeHtml += `
+            <div class="ws-tree-file" data-file-id="${fileId}" data-workspace-id="${workspaceId}" onclick="selectWorkspaceFile('${workspaceId}', '${fileId}')" title="${escapeHtml(fileName)}">
+                <span class="ws-tree-icon">${getFileIcon(fileExt)}</span>
+                <span class="ws-tree-name">${escapeHtml(fileName)}</span>
+                <span class="ws-tree-size">${sizeStr}</span>
             </div>
         `;
     }
 
-    html += `
+    // Build preview pane data (stored in JS, rendered on selection)
+    const previewDataScript = `
+        <script type="application/json" id="ws-data-${workspaceId}">
+            ${JSON.stringify(Object.fromEntries(fileEntries.map(([path, content]) => {
+                const ext = path.split('.').pop().toLowerCase();
+                const isBinary = ['pdf', 'pptx', 'docx', 'xlsx', 'png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext);
+                const pdfPath = path + '.pdf';
+                const hasPdfVersion = isOfficeDocument(path) && workspaceFiles[pdfPath];
+                return [
+                    `${agentId}__${timestamp}__${path}`.replace(/[^a-zA-Z0-9]/g, '_'),
+                    { path, content, ext, isBinary, hasPdfVersion, pdfPath: hasPdfVersion ? pdfPath : null }
+                ];
+            })))}
+        </script>
+    `;
+
+    // Get first file for initial preview
+    const firstFileId = fileEntries.length > 0
+        ? `${agentId}__${timestamp}__${fileEntries[0][0]}`.replace(/[^a-zA-Z0-9]/g, '_')
+        : null;
+
+    const html = `
+        <div class="inline-workspace split-pane" id="${workspaceId}">
+            <div class="inline-workspace-header">
+                <span class="inline-ws-icon">📁</span>
+                <span class="inline-ws-title">Workspace Files (${fileEntries.length})</span>
             </div>
+            <div class="ws-split-container">
+                <div class="ws-file-tree">
+                    ${fileTreeHtml}
+                </div>
+                <div class="ws-preview-pane" id="preview-${workspaceId}">
+                    <div class="ws-preview-placeholder">
+                        <span>👈 Select a file to preview</span>
+                    </div>
+                </div>
+            </div>
+            ${previewDataScript}
         </div>
     `;
 
+    // Auto-select first file after render
+    if (firstFileId) {
+        setTimeout(() => selectWorkspaceFile(workspaceId, firstFileId), 0);
+    }
+
     return html;
+}
+
+/**
+ * Select and preview a file in the split-pane workspace
+ */
+function selectWorkspaceFile(workspaceId, fileId) {
+    const workspace = document.getElementById(workspaceId);
+    if (!workspace) return;
+
+    // Update selected state in file tree
+    workspace.querySelectorAll('.ws-tree-file').forEach(f => f.classList.remove('selected'));
+    const selectedFile = workspace.querySelector(`.ws-tree-file[data-file-id="${fileId}"]`);
+    if (selectedFile) selectedFile.classList.add('selected');
+
+    // Get file data from embedded JSON
+    const dataScript = document.getElementById(`ws-data-${workspaceId}`);
+    if (!dataScript) return;
+
+    let filesData;
+    try {
+        filesData = JSON.parse(dataScript.textContent);
+    } catch (e) {
+        console.error('Failed to parse workspace data:', e);
+        return;
+    }
+
+    const fileData = filesData[fileId];
+    if (!fileData) return;
+
+    const previewPane = document.getElementById(`preview-${workspaceId}`);
+    if (!previewPane) return;
+
+    // Build preview content
+    const { path, content, ext, isBinary, hasPdfVersion, pdfPath } = fileData;
+    const isPdf = ext === 'pdf';
+    const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext);
+    const isPreviewable = window.canPreviewArtifact ? window.canPreviewArtifact(path, content) : false;
+
+    // Action buttons
+    const previewButton = isPreviewable
+        ? `<button class="ws-action-btn preview-btn" onclick="event.stopPropagation(); openArtifactPreviewFromElement(this)" data-filename="${escapeHtml(path)}" data-fileid="${fileId}" data-has-pdf="${hasPdfVersion}" data-pdf-path="${hasPdfVersion ? escapeHtml(pdfPath) : ''}">👁️ Preview</button>`
+        : '';
+
+    let contentHtml;
+    if (isPdf) {
+        contentHtml = `
+            <div class="ws-preview-content pdf">
+                <iframe src="data:application/pdf;base64,${content}" style="width:100%; height:100%; border:none;"></iframe>
+            </div>
+        `;
+    } else if (isImage) {
+        const mimeType = ext === 'png' ? 'image/png' :
+                       ext === 'gif' ? 'image/gif' :
+                       ext === 'webp' ? 'image/webp' : 'image/jpeg';
+        contentHtml = `
+            <div class="ws-preview-content image">
+                <img src="data:${mimeType};base64,${content}" />
+            </div>
+        `;
+    } else if (isBinary) {
+        contentHtml = `
+            <div class="ws-preview-content binary">
+                <div class="ws-binary-notice">
+                    <span class="ws-binary-icon">📄</span>
+                    <p>Binary file (${ext.toUpperCase()})</p>
+                    <p class="ws-binary-hint">${hasPdfVersion ? 'PDF preview available' : 'Use Download to save'}</p>
+                </div>
+            </div>
+        `;
+    } else {
+        // Text/code files
+        contentHtml = `
+            <div class="ws-preview-content code">
+                <pre><code>${escapeHtml(content)}</code></pre>
+            </div>
+        `;
+    }
+
+    previewPane.innerHTML = `
+        <div class="ws-preview-header">
+            <span class="ws-preview-filename">${escapeHtml(path)}</span>
+            <div class="ws-preview-actions">
+                ${previewButton}
+                ${!isBinary ? `<button class="ws-action-btn" onclick="copyToClipboard(\`${escapeHtml(content).replace(/`/g, '\\`')}\`)">📋 Copy</button>` : ''}
+                <button class="ws-action-btn" onclick="downloadWorkspaceFileInline('${fileId}', '${escapeHtml(path)}')">⬇️ Download</button>
+            </div>
+        </div>
+        ${contentHtml}
+    `;
 }
 
 /**
