@@ -1793,6 +1793,18 @@ body {
     margin-right: 0.25rem;
 }
 
+/* Attempt badge for multiple attempts */
+.attempt-badge {
+    font-size: 0.75rem;
+    opacity: 0.8;
+    margin-left: 0.25rem;
+    font-weight: normal;
+}
+
+.turn-tab.active .attempt-badge {
+    opacity: 1;
+}
+
 /* Conversation History Button */
 .conversation-history-btn {
     display: flex;

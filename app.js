@@ -133,15 +133,17 @@ function getTurnsFromManifest(manifest) {
 /**
  * Set current turn for filtering data
  */
-function setCurrentTurn(turnNumber) {
-    console.log('[Turn Filter] setCurrentTurn called with:', turnNumber);
-    currentTurn = turnNumber;
+function setCurrentTurn(turnKey) {
+    console.log('[Turn Filter] setCurrentTurn called with:', turnKey);
+    currentTurn = turnKey;
     // Update turn tab UI
     updateTurnTabs();
-    // Show/hide "Try This Session" based on turn (only show on Turn 1)
+    // Show/hide "Try This Session" based on turn (only show on Turn 1, any attempt)
     const trySection = document.getElementById('try-session-section');
     if (trySection) {
-        trySection.style.display = (turnNumber === 1 || turnNumber === null) ? '' : 'none';
+        // turnKey is like "1_1" or "1_2" - extract turn number
+        const turnNumber = turnKey ? parseInt(turnKey.split('_')[0], 10) : null;
+        trySection.style.display = (turnNumber === 1 || turnKey === null) ? '' : 'none';
     }
     // Re-render turn-dependent sections
     if (sessionData) {
@@ -161,20 +163,37 @@ function setCurrentTurn(turnNumber) {
 }
 
 /**
- * Extract turn number from file path
+ * Extract turn and attempt info from file path
+ * Handles paths like:
+ *   - turn_1__attempt_1__status.json (flattened with __)
+ *   - turn_1/attempt_1/status.json (nested with /)
+ * Returns: { turn: number, attempt: number, key: "turn_attempt" } or null
+ */
+function extractTurnAttemptFromPath(path) {
+    // Match turn_X__attempt_Y__ or turn_X/attempt_Y/
+    const match = path.match(/^turn_(\d+)(?:__|\/)+attempt_(\d+)(?:__|\/)/);
+    if (match) {
+        const turn = parseInt(match[1], 10);
+        const attempt = parseInt(match[2], 10);
+        return { turn, attempt, key: `${turn}_${attempt}` };
+    }
+    return null;
+}
+
+/**
+ * Extract turn number from file path (legacy, for backwards compatibility)
  * Handles paths like:
  *   - turn_1__attempt_1__status.json (flattened with __)
  *   - turn_1/attempt_1/status.json (nested with /)
  */
 function extractTurnFromPath(path) {
-    // Match either turn_X__ or turn_X/
-    const match = path.match(/^turn_(\d+)(?:__|\/)/);
-    return match ? parseInt(match[1], 10) : null;
+    const info = extractTurnAttemptFromPath(path);
+    return info ? info.turn : null;
 }
 
 /**
- * Filter files by current turn
- * Returns all files if currentTurn is null, otherwise only files for that turn
+ * Filter files by current turn (using compound key)
+ * Returns all files if currentTurn is null, otherwise only files for that turn+attempt
  */
 function filterFilesByTurn(files) {
     if (currentTurn === null) {
@@ -182,9 +201,10 @@ function filterFilesByTurn(files) {
     }
     const filtered = {};
     for (const [path, content] of Object.entries(files)) {
-        const turnNum = extractTurnFromPath(path);
-        // Include files from the current turn, or files without turn prefix (legacy)
-        if (turnNum === currentTurn || turnNum === null) {
+        const turnAttempt = extractTurnAttemptFromPath(path);
+        const fileKey = turnAttempt?.key || null;
+        // Include files from the current turn+attempt, or files without turn prefix (legacy)
+        if (fileKey === currentTurn || fileKey === null) {
             filtered[path] = content;
         }
     }
@@ -465,39 +485,43 @@ function extractSessionData(files) {
     let coordination = {};
     let snapshotMappings = {};
 
-    // Per-turn data storage: { turnNumber: { metrics, status, coordination, ... } }
+    // Per-turn data storage: { "turn_attempt": { metrics, status, coordination, ... } }
+    // e.g., { "1_1": { ... }, "1_2": { ... }, "2_1": { ... } }
     const perTurnData = {};
 
     for (const [path, content] of Object.entries(files)) {
-        const turnNum = extractTurnFromPath(path);
+        const turnAttempt = extractTurnAttemptFromPath(path);
+        const dataKey = turnAttempt?.key || null;
 
         // Initialize per-turn storage if needed
-        if (turnNum !== null && !perTurnData[turnNum]) {
-            perTurnData[turnNum] = {
+        if (dataKey !== null && !perTurnData[dataKey]) {
+            perTurnData[dataKey] = {
                 metrics: {},
                 status: {},
                 coordination: {},
                 snapshotMappings: {},
                 answers: {},
-                votes: {}
+                votes: {},
+                turnNumber: turnAttempt.turn,
+                attemptNumber: turnAttempt.attempt
             };
         }
 
         if (path.endsWith('metrics_summary.json') && typeof content === 'object') {
             metrics = content;
-            if (turnNum !== null) perTurnData[turnNum].metrics = content;
+            if (dataKey !== null) perTurnData[dataKey].metrics = content;
         }
         if (path.endsWith('status.json') && typeof content === 'object') {
             status = content;
-            if (turnNum !== null) perTurnData[turnNum].status = content;
+            if (dataKey !== null) perTurnData[dataKey].status = content;
         }
         if (path.endsWith('coordination_events.json') && typeof content === 'object') {
             coordination = content;
-            if (turnNum !== null) perTurnData[turnNum].coordination = content;
+            if (dataKey !== null) perTurnData[dataKey].coordination = content;
         }
         if (path.endsWith('snapshot_mappings.json') && typeof content === 'object') {
             snapshotMappings = content;
-            if (turnNum !== null) perTurnData[turnNum].snapshotMappings = content;
+            if (dataKey !== null) perTurnData[dataKey].snapshotMappings = content;
         }
     }
 
@@ -525,7 +549,8 @@ function extractSessionData(files) {
     for (const [path, content] of Object.entries(files)) {
         // Handle both flattened (turn_1__attempt_1__agent_a__ts__answer.txt) and nested paths
         if ((path.endsWith('__answer.txt') || path.includes('/answer.txt')) && typeof content === 'string') {
-            const turnNum = extractTurnFromPath(path);
+            const turnAttempt = extractTurnAttemptFromPath(path);
+            const dataKey = turnAttempt?.key || null;
             const { agentId, timestamp } = extractAgentFromPath(path);
             if (agentId && timestamp) {
                 const label = `${agentId}.${timestamp}`;
@@ -534,13 +559,15 @@ function extractSessionData(files) {
                     agent_id: agentId,
                     timestamp: timestamp,
                     content: content,
-                    turn: turnNum,
+                    turn: turnAttempt?.turn || null,
+                    attempt: turnAttempt?.attempt || null,
+                    turnKey: dataKey,
                     type: path.includes('final/') || path.includes('__final__') ? 'final_answer' : 'answer'
                 };
                 answers[label] = answerData;
                 // Also store in per-turn data
-                if (turnNum !== null && perTurnData[turnNum]) {
-                    perTurnData[turnNum].answers[label] = answerData;
+                if (dataKey !== null && perTurnData[dataKey]) {
+                    perTurnData[dataKey].answers[label] = answerData;
                 }
             }
         }
@@ -578,12 +605,23 @@ function extractSessionData(files) {
     }
 
     // Extract agent outputs (excluding _latest files)
-    // Paths like: turn_1/attempt_1/agent_outputs/agent_a.txt or agent_outputs/agent_a.txt
+    // Paths like: turn_1/attempt_1/agent_outputs/agent_a.txt or turn_1__attempt_1__agent_outputs__agent_a.txt
     const agentOutputs = {};
     for (const [path, content] of Object.entries(files)) {
-        if (path.includes('agent_outputs/') && path.endsWith('.txt')) {
-            const parts = path.split('/');
-            const filename = parts[parts.length - 1].replace('.txt', '');
+        // Handle both nested (/) and flattened (__) path formats
+        const isAgentOutput = (path.includes('agent_outputs/') || path.includes('__agent_outputs__')) && path.endsWith('.txt');
+        if (isAgentOutput) {
+            // Extract filename from either format
+            let filename;
+            if (path.includes('__agent_outputs__')) {
+                // Flattened: turn_1__attempt_1__agent_outputs__agent_a.txt
+                const afterOutputs = path.split('__agent_outputs__')[1];
+                filename = afterOutputs.replace('.txt', '');
+            } else {
+                // Nested: turn_1/attempt_1/agent_outputs/agent_a.txt
+                const parts = path.split('/');
+                filename = parts[parts.length - 1].replace('.txt', '');
+            }
             // Skip system_status and _latest files
             if (filename !== 'system_status' && !filename.endsWith('_latest')) {
                 agentOutputs[filename] = content;
@@ -783,8 +821,17 @@ function renderHeader(data) {
 
     // Render turn navigation if multi-turn
     if (isMultiTurn) {
-        // Default to turn 1 for multi-turn sessions
-        currentTurn = 1;
+        // Default to the last (most recent) turn+attempt
+        // Find the last turn in the manifest
+        const turns = data.manifest?.turns || [];
+        if (turns.length > 0) {
+            const lastTurn = turns[turns.length - 1];
+            currentTurn = `${lastTurn.turn_number}_${lastTurn.attempt_number || 1}`;
+        } else {
+            // Fallback: find last key in perTurnData
+            const keys = Object.keys(data.perTurnData || {}).sort();
+            currentTurn = keys.length > 0 ? keys[keys.length - 1] : '1_1';
+        }
         renderTurnNavigation(data);
         // Note: "Try This Session" is shown/hidden based on current turn in updateTurnDisplay
     }
@@ -847,10 +894,15 @@ function renderTurnNavigation(data) {
     nav.id = 'turn-navigation';
     nav.className = 'turn-navigation';
 
-    // Header
+    // Header - show unique turn count (not attempt count)
     const header = document.createElement('div');
     header.className = 'turn-nav-header';
-    header.innerHTML = `<strong>Turns:</strong> ${data.turns.length} total`;
+    const uniqueTurns = data.session?.turnCount || new Set(data.turns.map(t => t.turn_number)).size;
+    const totalAttempts = data.turns.length;
+    const headerText = uniqueTurns === totalAttempts
+        ? `<strong>Turns:</strong> ${uniqueTurns} total`
+        : `<strong>Turn${uniqueTurns > 1 ? 's' : ''}:</strong> ${uniqueTurns} (${totalAttempts} attempts)`;
+    header.innerHTML = headerText;
     nav.appendChild(header);
 
     // Turn tabs
@@ -865,11 +917,21 @@ function renderTurnNavigation(data) {
         const statusClass = turn.status === 'complete' ? 'complete' :
                             turn.status === 'error' ? 'error' : 'pending';
 
-        tab.className = `turn-tab ${statusClass} ${currentTurn === turn.turn_number ? 'active' : ''}`;
-        tab.innerHTML = `<span class="turn-status-icon">${statusIcon}</span> Turn ${turn.turn_number}`;
+        // Build tab label - include attempt info if there were multiple attempts
+        let tabLabel = `Turn ${turn.turn_number}`;
+        if (turn.total_attempts && turn.total_attempts > 1) {
+            tabLabel += ` <span class="attempt-badge">(Attempt ${turn.attempt_number}/${turn.total_attempts})</span>`;
+        }
+
+        // Create compound key for turn+attempt
+        const turnKey = `${turn.turn_number}_${turn.attempt_number || 1}`;
+
+        tab.className = `turn-tab ${statusClass} ${currentTurn === turnKey ? 'active' : ''}`;
+        tab.innerHTML = `<span class="turn-status-icon">${statusIcon}</span> ${tabLabel}`;
         tab.title = turn.question ? turn.question.substring(0, 100) : `Turn ${turn.turn_number}`;
+        tab.dataset.turnKey = turnKey;
         tab.onclick = () => {
-            setCurrentTurn(turn.turn_number);
+            setCurrentTurn(turnKey);
             updateTurnTabs();
         };
         tabs.appendChild(tab);
@@ -877,11 +939,11 @@ function renderTurnNavigation(data) {
 
     nav.appendChild(tabs);
 
-    // Add conversation history button
+    // Add conversation history button - use unique turn count
     const historyBtn = document.createElement('button');
     historyBtn.id = 'conversation-history-btn';
     historyBtn.className = 'conversation-history-btn';
-    historyBtn.innerHTML = `<span class="history-icon">💬</span> ${data.turns.length} turns`;
+    historyBtn.innerHTML = `<span class="history-icon">💬</span> ${uniqueTurns} turn${uniqueTurns > 1 ? 's' : ''}`;
     historyBtn.onclick = () => toggleConversationHistory();
     nav.appendChild(historyBtn);
 
@@ -916,8 +978,15 @@ function createConversationHistoryPanel(data) {
     const messages = document.createElement('div');
     messages.className = 'history-messages';
 
-    // Build conversation from turns
+    // Build conversation from turns - only show unique turns (not each attempt)
+    // For each turn number, use the LAST (successful) attempt
+    const uniqueTurns = new Map();
     for (const turn of data.turns) {
+        // Keep the last attempt for each turn number (overwrites earlier attempts)
+        uniqueTurns.set(turn.turn_number, turn);
+    }
+
+    for (const turn of uniqueTurns.values()) {
         // User message (the question/prompt)
         const userMsg = document.createElement('div');
         userMsg.className = 'history-message user-message';
@@ -930,11 +999,12 @@ function createConversationHistoryPanel(data) {
         `;
         messages.appendChild(userMsg);
 
-        // Assistant message (the final answer for this turn)
+        // Assistant message (the final answer for this turn - from the last attempt)
+        const turnKey = `${turn.turn_number}_${turn.attempt_number || 1}`;
         const turnAnswers = Object.values(data.answers || {}).filter(a =>
-            a.turn === turn.turn_number && a.type === 'final_answer'
+            a.turnKey === turnKey && a.type === 'final_answer'
         );
-        console.log('[ConvHistory] Turn', turn.turn_number, 'turnAnswers count:', turnAnswers.length);
+        console.log('[ConvHistory] Turn', turn.turn_number, 'attempt', turn.attempt_number, 'turnAnswers count:', turnAnswers.length);
         const finalAnswer = turnAnswers[0]?.content || findFinalAnswerForTurn(data, turn.turn_number);
         console.log('[ConvHistory] Turn', turn.turn_number, 'finalAnswer length:', finalAnswer?.length);
 
@@ -1030,15 +1100,20 @@ function expandHistoryMessage(btn) {
  */
 function updateTurnTabs() {
     const tabs = document.querySelectorAll('.turn-tab');
-    tabs.forEach((tab, index) => {
-        // Turn numbers are 1-indexed, so index 0 = turn 1
-        const turnNum = index + 1;
-        tab.classList.toggle('active', currentTurn === turnNum);
+    tabs.forEach(tab => {
+        // Each tab has data-turn-key attribute with compound key like "1_1"
+        const tabKey = tab.dataset.turnKey;
+        tab.classList.toggle('active', currentTurn === tabKey);
     });
 
     // Update header to show current turn's metadata
+    // currentTurn is now a compound key like "1_1" (turn_attempt)
     if (sessionData && sessionData.turns && currentTurn !== null) {
-        const currentTurnData = sessionData.turns.find(t => t.turn_number === currentTurn);
+        // Parse turn and attempt from compound key
+        const [turnNum, attemptNum] = currentTurn.split('_').map(Number);
+        const currentTurnData = sessionData.turns.find(t =>
+            t.turn_number === turnNum && (t.attempt_number || 1) === attemptNum
+        );
         if (currentTurnData) {
             // Update question
             const questionEl = document.getElementById('question');
@@ -1082,6 +1157,27 @@ function updateTurnTabs() {
 }
 
 /**
+ * Check if any agent uses claude_code backend (tool metrics not tracked for this backend)
+ */
+function hasClaudeCodeBackend(data) {
+    // Check parsed config agents
+    const configAgents = data.executionMetadata?.config?.agents;
+    if (Array.isArray(configAgents)) {
+        for (const agent of configAgents) {
+            if (agent.backend?.type === 'claude_code') {
+                return true;
+            }
+        }
+    }
+    // Also check raw YAML in case parsing didn't work
+    const rawYaml = data.executionMetadata?._raw;
+    if (rawYaml && rawYaml.includes('type: claude_code')) {
+        return true;
+    }
+    return false;
+}
+
+/**
  * Render stats grid
  */
 function renderStats(data) {
@@ -1101,7 +1197,18 @@ function renderStats(data) {
 
     document.getElementById('stat-cost').textContent = `$${cost.toFixed(4)}`;
     document.getElementById('stat-tokens').textContent = formatNumber(totalTokens);
-    document.getElementById('stat-tools').textContent = totalToolCalls;
+
+    // For claude_code backend, tool calls aren't tracked - show asterisk
+    const toolsEl = document.getElementById('stat-tools');
+    const usesClaudeCode = hasClaudeCodeBackend(data);
+    if (usesClaudeCode && totalToolCalls === 0) {
+        toolsEl.textContent = '0*';
+        toolsEl.title = 'Tool calls are not tracked for claude_code backend agents';
+    } else {
+        toolsEl.textContent = totalToolCalls;
+        toolsEl.title = '';
+    }
+
     document.getElementById('stat-rounds').textContent = totalRounds;
     document.getElementById('stat-agents').textContent = data.session.numAgents;
 }
@@ -1229,7 +1336,12 @@ function renderTools(data) {
     const tools = filteredData.metrics.tools?.by_tool || {};
 
     if (Object.keys(tools).length === 0) {
-        container.innerHTML = '<div class="no-data">No tool data available</div>';
+        // Show informative message if using claude_code backend
+        if (hasClaudeCodeBackend(data)) {
+            container.innerHTML = '<div class="no-data">Tool metrics are not tracked for claude_code backend agents.<br><span style="font-size: 0.85em; opacity: 0.7;">Claude Code runs as a subprocess and handles its own tool execution.</span></div>';
+        } else {
+            container.innerHTML = '<div class="no-data">No tool data available</div>';
+        }
         return;
     }
 
@@ -1765,12 +1877,13 @@ function renderAnswers(data) {
     // Use turn-filtered data
     const filteredData = getDataForCurrentTurn(data);
     const answers = filteredData.answers;
-    // Filter votes by current turn
+    // Filter votes by current turn (extract turn number from compound key)
     const allVotes = data.votes;
     const votes = {};
+    const currentTurnNum = currentTurn ? parseInt(currentTurn.split('_')[0], 10) : null;
     for (const [agentId, agentVotes] of Object.entries(allVotes)) {
         const filteredVotes = agentVotes.filter(v =>
-            currentTurn === null || v.turn === null || v.turn === currentTurn
+            currentTurnNum === null || v.turn === null || v.turn === currentTurnNum
         );
         if (filteredVotes.length > 0) {
             votes[agentId] = filteredVotes;
@@ -2094,9 +2207,11 @@ function renderOutputs(data) {
         const isTextFile = path.endsWith('.txt');
 
         if (isAgentOutput && isTextFile) {
-            const turnNum = extractTurnFromPath(path);
-            // Filter by current turn if set
-            if (currentTurn !== null && turnNum !== null && turnNum !== currentTurn) {
+            // Use compound key for filtering (turn_attempt, e.g., "1_2")
+            const turnAttempt = extractTurnAttemptFromPath(path);
+            const fileKey = turnAttempt?.key || null;
+            // Filter by current turn+attempt if set
+            if (currentTurn !== null && fileKey !== null && fileKey !== currentTurn) {
                 continue;
             }
 
